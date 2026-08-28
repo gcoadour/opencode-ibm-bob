@@ -16,6 +16,7 @@ own browser login endpoints and stored in OpenCode's auth store.
 | Hook | Effect |
 | --- | --- |
 | `config` | Registers the `ibm-bob` provider (name, adapter package, base URL, models, routing headers) so Bob models show up in `/models`, `opencode models` and `--model ibm-bob/premium`. |
+| `tool` | Adds `bob_usage`, reporting the Bobcoins spent this session and the team's usage against its budget. See [Usage cost](#usage-cost-bobcoins). |
 | `auth` | Adds **IBM Bob SSO (browser)** and **IBM Bob API key** to `opencode auth login`, refreshes expired SSO tokens, and attaches the credential, Bob's auth scheme and the instance/team routing headers to every request. |
 
 Bob requires an `x-instance-id` header and, for SSO tokens, a matching
@@ -119,6 +120,32 @@ plugin performs that conversion.
 The cache lives in `${XDG_CACHE_HOME:-~/.cache}/opencode/ibm-bob/catalog.json`,
 is scoped to the base URL that produced it, and holds no credentials.
 
+## Usage cost (Bobcoins)
+
+Bob does not price per token — `/model/info` reports a zero token price, so
+OpenCode's own cost column stays at `$0.00`. Bob bills in **Bobcoins** instead
+and reports the amount spent as `usage.credits` on each inference response,
+which is the field Bob Shell reads.
+
+The plugin registers a `bob_usage` tool that reports both figures:
+
+```
+This session so far: 0.000040 Bobcoins over 1 billed response(s).
+Team default: 0.328 of 40.00 Bobcoins used, 39.67 left.
+```
+
+- **Session** — the credits Bob charged for the responses this OpenCode process
+  has already received. The turn that calls the tool has not been billed yet, so
+  its own cost only shows on a later call; in one-shot `opencode run` the figure
+  is therefore usually zero, while a TUI session accumulates.
+- **Team** — read live from `GET /admin/v1/teams/{team}/users/{member}`, the
+  same call Bob Shell makes, falling back to the usage figure the profile
+  already carries when that route is unreachable.
+
+Amounts use Bob Shell's precision ladder, with one finer step: a single request
+can cost less than `0.0001` Bobcoin, which Bob Shell's last rung prints as a
+flat `0.0000`.
+
 ## Instance and team routing
 
 Bob routes every request with an instance and, for SSO credentials, a team.
@@ -165,6 +192,7 @@ is scoped to the origin that produced it, and holds no credentials.
 | `IBM_BOB_PROFILE_DISCOVERY_TIMEOUT_MS` | `5000` | Profile discovery timeout. |
 | `IBM_BOB_PROFILE_CACHE` | `${XDG_CACHE_HOME:-~/.cache}/opencode/ibm-bob/profile.json` | Profile cache file. |
 | `IBM_BOB_PROFILE_TTL_MS` | `86400000` | Age after which the cached profile is refetched. |
+| `IBM_BOB_BUDGET_TIMEOUT_MS` | `5000` | Timeout for the Bobcoin budget lookup. |
 | `IBM_BOB_DEBUG` | `false` | Log discovery, token and login steps. |
 
 ### Adapter
@@ -228,7 +256,7 @@ place:
 
 ```bash
 bun install
-bun test        # 88 tests
+bun test        # 107 tests
 bun run typecheck
 ```
 
@@ -248,13 +276,14 @@ key:
 
 Also verified locally:
 
-- `bun test` — 88 tests covering catalog parsing (including the API-key payload
+- `bun test` — 107 tests covering catalog parsing (including the API-key payload
   shape, the `exposed` and `completion_only` filters), per-million price
   conversion, catalog cache round-trip and base-URL scoping, fallback and
   override model building, the `Apikey`/`Bearer` header rules, credential
   resolution order, SSO expiry/refresh/persistence, profile parsing and
   selection, profile cache round-trip and origin scoping, the routing-header
-  precedence, and the `config`/`auth` hooks.
+  precedence, Bobcoin parsing from both JSON and streamed responses, the
+  Bobcoin formatting ladder, the budget lookup, and the `config`/`auth` hooks.
 - `tsc --noEmit` — clean.
 - Against a local stub of the Bob API, OpenCode issued
   `GET /inference/v1/model/info` and then `POST /inference/v1/chat/completions`
@@ -275,8 +304,16 @@ endpoint, with no `IBM_BOB_*` variable set and no `~/.bob/settings.json`:
   `-m ibm-bob/fast` answered, and a tool-calling prompt went through — all over
   SSO alone.
 
+Bobcoin reporting was verified against the same live endpoint: a completion
+reported `usage.credits` of `0.00004`, the session accumulator picked it up
+without disturbing the response OpenCode consumes, and `bob_usage` returned the
+team's live figure from `/admin/v1/teams/{team}/users/{member}`.
+
 Not verified: multi-instance and multi-team accounts, which were exercised only
-against parsed payloads and not a live account exposing more than one pair.
+against parsed payloads and not a live account exposing more than one pair; and
+Bobcoin accounting on a streamed response, which was covered by tests but not
+observed against live Bob, since the adapter used here returned a single JSON
+body.
 
 ## License
 

@@ -27,6 +27,7 @@ function profilePayload(overrides: Record<string, unknown> = {}) {
         instance_name: "bob-001",
         region: "us-east",
         role: "bob-admin",
+        user_id: "user-1",
         teams: [{ id: "team-1", name: "default", usage: 0.11, budget_limit: 40 }],
         ...overrides,
       },
@@ -52,7 +53,16 @@ afterEach(() => {
 describe("parseBobProfiles", () => {
   test("flattens instances into one entry per team", () => {
     expect(parseBobProfiles(profilePayload())).toEqual([
-      { instanceId: "instance-1", instanceName: "bob-001", region: "us-east", teamId: "team-1", teamName: "default" },
+      {
+        instanceId: "instance-1",
+        instanceName: "bob-001",
+        region: "us-east",
+        instanceUserId: "user-1",
+        teamId: "team-1",
+        teamName: "default",
+        usage: 0.11,
+        budgetLimit: 40,
+      },
     ])
   })
 
@@ -66,8 +76,22 @@ describe("parseBobProfiles", () => {
 
   test("keeps an instance that exposes no team, since API keys route without one", () => {
     expect(parseBobProfiles(profilePayload({ teams: [] }))).toEqual([
-      { instanceId: "instance-1", instanceName: "bob-001", region: "us-east" },
+      { instanceId: "instance-1", instanceName: "bob-001", region: "us-east", instanceUserId: "user-1" },
     ])
+  })
+
+  test("keeps a zero Bobcoin usage, which a fresh account legitimately reports", () => {
+    const profiles = parseBobProfiles(profilePayload({ teams: [{ id: "team-1", usage: 0, budget_limit: 40 }] }))
+    expect(profiles[0]?.usage).toBe(0)
+    expect(profiles[0]?.budgetLimit).toBe(40)
+  })
+
+  test("drops a malformed usage or budget rather than reporting a wrong figure", () => {
+    const profiles = parseBobProfiles(
+      profilePayload({ teams: [{ id: "team-1", usage: "0.11", budget_limit: -5 }] }),
+    )
+    expect(profiles[0]?.usage).toBeUndefined()
+    expect(profiles[0]?.budgetLimit).toBeUndefined()
   })
 
   test("drops malformed entries and de-duplicates repeated pairs", () => {

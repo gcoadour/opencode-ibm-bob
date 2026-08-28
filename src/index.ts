@@ -14,6 +14,7 @@ import {
   type StoredAuth,
 } from "./auth.ts"
 import { fetchBobModelCatalog, readCachedCatalog, writeCachedCatalog, type BobDiscoveredModel } from "./catalog.ts"
+import { BobSpend, fetchBobBudget, formatBobcoins } from "./cost.ts"
 import { BobProfileResolver, type BobProfile } from "./profile.ts"
 import {
   DEFAULT_CATALOG_TTL_MS,
@@ -50,7 +51,8 @@ export const IbmBobPlugin = async ({ client }: PluginInput): Promise<Hooks> => {
   const settings = readBobShellSettings()
   const resolver = new BobTokenResolver()
   const profiles = new BobProfileResolver()
-  const bobFetch = createBobFetch(resolver, profiles)
+  const spend = new BobSpend()
+  const bobFetch = createBobFetch(resolver, profiles, spend)
   const enabled = envBool("IBM_BOB_ENABLED", true)
   const discoverModels = envBool("IBM_BOB_DISCOVER_MODELS", true)
 
@@ -168,6 +170,63 @@ export const IbmBobPlugin = async ({ client }: PluginInput): Promise<Hooks> => {
           fetch: bobFetch,
         },
       }
+    },
+
+    tool: {
+      /**
+       * Bob prices usage in Bobcoins, not per token, so OpenCode's own cost
+       * column stays at zero. This reports what was actually spent.
+       */
+      bob_usage: {
+        description:
+          "Report IBM Bob usage in Bobcoins: what this OpenCode session spent, and the team's total usage against its budget.",
+        args: {},
+        async execute() {
+          // The turn that calls this tool has not been billed yet, so its own
+          // cost only appears on the next call.
+          const lines = [
+            `This session so far: ${formatBobcoins(spend.total)} Bobcoins over ${spend.count} billed response(s).`,
+          ]
+
+          const token = await resolver.resolve()
+          const profile = token ? await profiles.resolve(token, authSchemeFor(token)) : undefined
+          if (!token || !profile) {
+            lines.push("Team usage is unavailable: no IBM Bob credential resolved.")
+            return { title: "IBM Bob usage", output: lines.join("\n") }
+          }
+
+          const team = profile.teamName ?? profile.teamId ?? "unknown"
+          // The profile already carries a usage figure; the budget endpoint has
+          // the fresher per-member one, so it is preferred when reachable.
+          let usage = profile.usage
+          let limit = profile.budgetLimit
+          if (profile.teamId && profile.instanceUserId) {
+            try {
+              const budget = await fetchBobBudget(token, authSchemeFor(token), {
+                ...profile,
+                teamId: profile.teamId,
+                instanceUserId: profile.instanceUserId,
+              })
+              usage = budget.usage
+              limit = budget.budgetLimit ?? limit
+            } catch (error) {
+              log(`budget lookup failed, using the profile figure: ${errorMessage(error)}`, "warn")
+            }
+          }
+
+          if (usage === undefined) {
+            lines.push(`Team ${team}: IBM Bob did not report a usage figure.`)
+          } else if (limit === undefined) {
+            lines.push(`Team ${team}: ${formatBobcoins(usage)} Bobcoins used (no published limit).`)
+          } else {
+            lines.push(
+              `Team ${team}: ${formatBobcoins(usage)} of ${formatBobcoins(limit)} Bobcoins used, ` +
+                `${formatBobcoins(Math.max(0, limit - usage))} left.`,
+            )
+          }
+          return { title: "IBM Bob usage", output: lines.join("\n") }
+        },
+      },
     },
 
     auth: {

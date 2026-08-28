@@ -18,6 +18,7 @@ export const DEFAULT_LOGIN_TIMEOUT_MS = 180_000
 export const DEFAULT_CATALOG_TTL_MS = 24 * 60 * 60 * 1000
 export const DEFAULT_PROFILE_DISCOVERY_TIMEOUT_MS = 5000
 export const DEFAULT_PROFILE_TTL_MS = 24 * 60 * 60 * 1000
+export const DEFAULT_BUDGET_TIMEOUT_MS = 5000
 
 /** Bob Shell's admin service, which exposes the account's instance/team profile. */
 export const ADMIN_SERVICE_PATH = "/admin/v1"

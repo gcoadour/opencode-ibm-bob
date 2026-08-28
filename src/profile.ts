@@ -27,15 +27,30 @@ export interface BobProfile {
   region?: string
   teamId?: string
   teamName?: string
+  /** The member id inside the instance, needed for Bob's budget lookup. */
+  instanceUserId?: string
+  /** Bobcoins already spent by this member, as reported with the profile. */
+  usage?: number
+  /** The team's Bobcoin allowance, when Bob publishes one. */
+  budgetLimit?: number
 }
 
 interface CachedProfiles {
+  version: number
   updated: number
   origin: string
   profiles: BobProfile[]
 }
 
+/** Bumped whenever `BobProfile` gains a field, so stale caches are refetched. */
+const CACHE_VERSION = 2
+
 const MAX_PROFILE_ENTRIES = 200
+
+/** Bobcoin figures are legitimately zero on a fresh account, so 0 must survive. */
+function spentNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined
+}
 
 /**
  * Parses Bob's `/admin/v1/profile` payload into one entry per (instance, team).
@@ -61,10 +76,12 @@ export function parseBobProfiles(payload: unknown): BobProfile[] {
 
     const instanceName = safeLabel(entry.instance_name)
     const region = safeLabel(entry.region)
+    const instanceUserId = safeLabel(entry.user_id)
     const base: BobProfile = {
       instanceId,
       ...(instanceName ? { instanceName } : {}),
       ...(region ? { region } : {}),
+      ...(instanceUserId ? { instanceUserId } : {}),
     }
 
     let added = false
@@ -75,7 +92,13 @@ export function parseBobProfiles(payload: unknown): BobProfile[] {
       seen.add(`${instanceId}/${teamId}`)
       added = true
       const teamName = safeLabel(team.name)
-      profiles.push({ ...base, teamId, ...(teamName ? { teamName } : {}) })
+      profiles.push({
+        ...base,
+        teamId,
+        ...(teamName ? { teamName } : {}),
+        ...(spentNumber(team.usage) !== undefined ? { usage: spentNumber(team.usage) } : {}),
+        ...(positiveNumber(team.budget_limit) !== undefined ? { budgetLimit: positiveNumber(team.budget_limit) } : {}),
+      })
     }
 
     if (!added && !seen.has(`${instanceId}/`)) {
@@ -104,12 +127,16 @@ export function sanitizeProfiles(value: unknown): BobProfile[] | undefined {
     const instanceName = safeLabel(entry.instanceName)
     const teamName = safeLabel(entry.teamName)
     const region = safeLabel(entry.region)
+    const instanceUserId = safeLabel(entry.instanceUserId)
     profiles.push({
       instanceId,
       ...(instanceName ? { instanceName } : {}),
       ...(region ? { region } : {}),
+      ...(instanceUserId ? { instanceUserId } : {}),
       ...(teamId ? { teamId } : {}),
       ...(teamName ? { teamName } : {}),
+      ...(spentNumber(entry.usage) !== undefined ? { usage: spentNumber(entry.usage) } : {}),
+      ...(positiveNumber(entry.budgetLimit) !== undefined ? { budgetLimit: positiveNumber(entry.budgetLimit) } : {}),
     })
   }
   return profiles.length > 0 ? profiles : undefined
@@ -176,6 +203,7 @@ export function readCachedProfiles(): { profiles: BobProfile[]; updated: number 
   try {
     const parsed: unknown = JSON.parse(readFileSync(profileCacheFile(), "utf8"))
     if (!isRecord(parsed)) return undefined
+    if (parsed.version !== CACHE_VERSION) return undefined
     if (safeLabel(parsed.origin) !== bobOrigin()) return undefined
     const profiles = sanitizeProfiles(parsed.profiles)
     if (!profiles) return undefined
@@ -186,7 +214,7 @@ export function readCachedProfiles(): { profiles: BobProfile[]; updated: number 
 }
 
 export function writeCachedProfiles(profiles: BobProfile[]): void {
-  const payload: CachedProfiles = { updated: Date.now(), origin: bobOrigin(), profiles }
+  const payload: CachedProfiles = { version: CACHE_VERSION, updated: Date.now(), origin: bobOrigin(), profiles }
   try {
     const file = profileCacheFile()
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 })

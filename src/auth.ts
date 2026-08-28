@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto"
 import { createServer } from "node:http"
 import { createServer as createNetServer } from "node:net"
 import { truncateHttpBody } from "./catalog.ts"
+import type { BobSpend } from "./cost.ts"
 import type { BobProfileResolver } from "./profile.ts"
 import {
   DEFAULT_LOGIN_TIMEOUT_MS,
@@ -154,7 +155,11 @@ function headersToRecord(init?: HeadersInit): Record<string, string | null | und
  */
 export type BobFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
-export function createBobFetch(resolver: BobTokenResolver, profiles?: BobProfileResolver): BobFetch {
+export function createBobFetch(
+  resolver: BobTokenResolver,
+  profiles?: BobProfileResolver,
+  spend?: BobSpend,
+): BobFetch {
   return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const token = await resolver.resolve()
     // Bob rejects inference with `402 team user not found` when an SSO token
@@ -174,7 +179,10 @@ export function createBobFetch(resolver: BobTokenResolver, profiles?: BobProfile
     for (const [name, value] of Object.entries(headers)) {
       if (typeof value === "string") final[name] = value
     }
-    return fetch(input, { ...init, headers: final })
+    const response = await fetch(input, { ...init, headers: final })
+    // Bob bills in Bobcoins and reports the amount on the response itself.
+    spend?.observe(response)
+    return response
   }
 }
 
