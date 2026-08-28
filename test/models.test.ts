@@ -98,3 +98,35 @@ test("modelName falls back to a title-cased id", () => {
   expect(modelName("premium")).toBe("IBM Bob Premium")
   expect(modelName("granite-3.2-8b")).toBe("Granite 3 2 8b")
 })
+
+describe("Bobcoin pricing", () => {
+  test("prices a model with the rate learned from Bob's own charges", () => {
+    const models = buildModels(
+      [{ id: "premium", reasoning: false, supportsVision: false, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
+      { premium: { input: 2, output: 2, samples: 4 } },
+    )
+    expect(models.premium?.cost).toEqual({ input: 2, output: 2, cache_read: 2, cache_write: 2 })
+  })
+
+  test("keeps a price Bob actually declared, rather than the learned one", () => {
+    const models = buildModels(
+      [{ id: "premium", reasoning: false, supportsVision: false, cost: { input: 3, output: 15, cacheRead: 1, cacheWrite: 2 } }],
+      { premium: { input: 2, output: 2, samples: 4 } },
+    )
+    expect(models.premium?.cost).toEqual({ input: 3, output: 15, cache_read: 1, cache_write: 2 })
+  })
+
+  test("leaves an unlearned model at zero", () => {
+    const models = buildModels(
+      [{ id: "premium", reasoning: false, supportsVision: false, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
+      {},
+    )
+    expect(models.premium?.cost).toEqual({ input: 0, output: 0, cache_read: 0, cache_write: 0 })
+  })
+
+  test("prices fallback models too", () => {
+    process.env.IBM_BOB_MODELS = "premium"
+    const models = buildModels(undefined, { premium: { input: 2, output: 2, samples: 4 } })
+    expect(models.premium?.cost.input).toBe(2)
+  })
+})

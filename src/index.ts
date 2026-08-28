@@ -15,6 +15,7 @@ import {
 } from "./auth.ts"
 import { fetchBobModelCatalog, readCachedCatalog, writeCachedCatalog, type BobDiscoveredModel } from "./catalog.ts"
 import { BobSpend, fetchBobBudget, formatBobcoins } from "./cost.ts"
+import { BobRates } from "./rates.ts"
 import { BobProfileResolver, type BobProfile } from "./profile.ts"
 import {
   DEFAULT_CATALOG_TTL_MS,
@@ -51,7 +52,8 @@ export const IbmBobPlugin = async ({ client }: PluginInput): Promise<Hooks> => {
   const settings = readBobShellSettings()
   const resolver = new BobTokenResolver()
   const profiles = new BobProfileResolver()
-  const spend = new BobSpend()
+  const rates = new BobRates()
+  const spend = new BobSpend(rates)
   const bobFetch = createBobFetch(resolver, profiles, spend)
   const enabled = envBool("IBM_BOB_ENABLED", true)
   const discoverModels = envBool("IBM_BOB_DISCOVER_MODELS", true)
@@ -145,10 +147,14 @@ export const IbmBobPlugin = async ({ client }: PluginInput): Promise<Hooks> => {
   }
 
   return {
+    async dispose() {
+      rates.flush()
+    },
+
     async config(input) {
       if (!enabled) return
 
-      const models = buildModels(await resolveCatalog())
+      const models = buildModels(await resolveCatalog(), rates.all())
       const providers = (input.provider ??= {})
       const existing = providers[PROVIDER_ID] ?? {}
       const existingOptions = (existing.options ?? {}) as Record<string, unknown>
@@ -222,6 +228,15 @@ export const IbmBobPlugin = async ({ client }: PluginInput): Promise<Hooks> => {
             lines.push(
               `Team ${team}: ${formatBobcoins(usage)} of ${formatBobcoins(limit)} Bobcoins used, ` +
                 `${formatBobcoins(Math.max(0, limit - usage))} left.`,
+            )
+          }
+          const learned = Object.entries(rates.all())
+          if (learned.length > 0) {
+            lines.push(
+              "Learned rates (Bobcoins per million tokens): " +
+                learned
+                  .map(([id, rate]) => `${id} ${rate.input.toFixed(3)} in / ${rate.output.toFixed(3)} out`)
+                  .join(", "),
             )
           }
           return { title: "IBM Bob usage", output: lines.join("\n") }

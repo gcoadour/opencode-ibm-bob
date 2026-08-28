@@ -1,6 +1,7 @@
 import { isRecord, readBoundedResponseBody, truncateHttpBody } from "./catalog.ts"
 import { DEFAULT_BUDGET_TIMEOUT_MS, adminBaseUrl, envInt, errorMessage, log, routingHeaders } from "./env.ts"
 import type { BobProfile } from "./profile.ts"
+import type { BobRates } from "./rates.ts"
 
 /**
  * Bob prices usage in Bobcoins rather than per token: `/model/info` reports a
@@ -25,48 +26,78 @@ export function formatBobcoins(value: number): string {
   return value.toFixed(6)
 }
 
-export function extractCredits(payload: unknown): number | undefined {
+/** What Bob charged for one response, and the tokens it charged for. */
+export interface BobUsage {
+  credits: number
+  inputTokens: number
+  outputTokens: number
+}
+
+function tokenCount(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0
+}
+
+export function extractUsage(payload: unknown): BobUsage | undefined {
   if (!isRecord(payload) || !isRecord(payload.usage)) return undefined
   const credits = payload.usage.credits
-  return typeof credits === "number" && Number.isFinite(credits) && credits >= 0 ? credits : undefined
+  if (typeof credits !== "number" || !Number.isFinite(credits) || credits < 0) return undefined
+  return {
+    credits,
+    inputTokens: tokenCount(payload.usage.prompt_tokens),
+    outputTokens: tokenCount(payload.usage.completion_tokens),
+  }
+}
+
+export function extractCredits(payload: unknown): number | undefined {
+  return extractUsage(payload)?.credits
 }
 
 /**
  * Reads the spend out of a completion response, whether Bob answered with a
  * single JSON object or an SSE stream whose last chunks carry the usage.
  */
-export function creditsFromBody(body: string): number | undefined {
+export function usageFromBody(body: string): BobUsage | undefined {
   const trimmed = body.trim()
   if (!trimmed) return undefined
 
   if (!trimmed.startsWith("data:")) {
     try {
-      return extractCredits(JSON.parse(trimmed))
+      return extractUsage(JSON.parse(trimmed))
     } catch {
       return undefined
     }
   }
 
   // Streaming: the usage chunk is emitted last, so the final match wins.
-  let credits: number | undefined
+  let usage: BobUsage | undefined
   for (const line of trimmed.split("\n")) {
     const data = line.trim()
     if (!data.startsWith("data:")) continue
     const payload = data.slice(5).trim()
     if (!payload || payload === "[DONE]") continue
     try {
-      credits = extractCredits(JSON.parse(payload)) ?? credits
+      usage = extractUsage(JSON.parse(payload)) ?? usage
     } catch {
       // A partial chunk is not an error; the next one may still carry usage.
     }
   }
-  return credits
+  return usage
+}
+
+export function creditsFromBody(body: string): number | undefined {
+  return usageFromBody(body)?.credits
 }
 
 /** Bobcoins spent through this OpenCode session. */
 export class BobSpend {
   private credits = 0
   private requests = 0
+  private readonly rates?: BobRates
+
+  // A parameter property would not survive Node's type-stripping loader.
+  constructor(rates?: BobRates) {
+    this.rates = rates
+  }
 
   record(credits: number): void {
     this.credits += credits
@@ -86,7 +117,7 @@ export class BobSpend {
    * Extracts the spend from a response without disturbing the one OpenCode
    * consumes, and never lets an accounting failure break a request.
    */
-  observe(response: Response): void {
+  observe(response: Response, modelId?: string): void {
     const type = response.headers.get("content-type") ?? ""
     if (!/json|event-stream/i.test(type) || !response.body) return
     let clone: Response
@@ -97,8 +128,12 @@ export class BobSpend {
     }
     void (async () => {
       try {
-        const credits = creditsFromBody(await readBoundedResponseBody(clone))
-        if (credits !== undefined) this.record(credits)
+        const usage = usageFromBody(await readBoundedResponseBody(clone))
+        if (!usage) return
+        this.record(usage.credits)
+        // Bob publishes no price list, so what it charged here is the only way
+        // to learn what this model costs.
+        if (modelId) this.rates?.record(modelId, usage.inputTokens, usage.outputTokens, usage.credits)
       } catch (error) {
         log(`could not read the Bobcoin cost of a response: ${errorMessage(error)}`)
       }

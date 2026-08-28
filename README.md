@@ -127,11 +127,47 @@ OpenCode's own cost column stays at `$0.00`. Bob bills in **Bobcoins** instead
 and reports the amount spent as `usage.credits` on each inference response,
 which is the field Bob Shell reads.
 
+### Pricing the models
+
+Bob publishes no rate: every entry in `/model/info` reports
+`input_cost_per_token: 0`, and the only figure Bob ever returns is the amount it
+charged for a response. The plugin therefore *learns* each model's rate from
+that figure — no extra request, no probing — fitting
+
+```
+credits = input × inputTokens + output × outputTokens
+```
+
+by least squares over the responses it has seen, caching the running sums per
+model. Those rates fill the model's `cost`, so **OpenCode's cost column shows
+the Bobcoin amount** instead of a flat zero.
+
+Two consequences worth knowing:
+
+- OpenCode formats that column as `$0.02`. The dollar sign is hardcoded in
+  OpenCode itself, with no configuration or plugin hook to change it, so the
+  figure is Bobcoins wearing the wrong symbol. `bob_usage` is the unambiguous
+  reading.
+- A model is priced from the next OpenCode start after it is first used, since
+  models are registered before any request happens. Until then it shows zero.
+
+Rates observed on a trial account, for reference: `premium`, `premium-ide` and
+`sonnet-4.5` at 2.000 Bobcoins per million tokens, `ultra` at 2.500, `fast` and
+`explorer` at roughly 0.80 in / 0.84 out, `granite-8b-code-instruct` and
+`gpt-oss-20b` free. A rate Bob does declare in the catalog is always preferred
+over a learned one.
+
+The cache lives in `${XDG_CACHE_HOME:-~/.cache}/opencode/ibm-bob/rates.json`,
+is scoped to the origin that produced it, and holds no credentials.
+
+### Reading the current usage
+
 The plugin registers a `bob_usage` tool that reports both figures:
 
 ```
-This session so far: 0.000040 Bobcoins over 1 billed response(s).
-Team default: 0.328 of 40.00 Bobcoins used, 39.67 left.
+This session so far: 0.0005 Bobcoins over 5 billed response(s).
+Team default: 0.347 of 40.00 Bobcoins used, 39.65 left.
+Learned rates (Bobcoins per million tokens): premium 2.000 in / 2.000 out, fast 0.829 in / 0.837 out
 ```
 
 - **Session** — the credits Bob charged for the responses this OpenCode process
@@ -193,6 +229,7 @@ is scoped to the origin that produced it, and holds no credentials.
 | `IBM_BOB_PROFILE_CACHE` | `${XDG_CACHE_HOME:-~/.cache}/opencode/ibm-bob/profile.json` | Profile cache file. |
 | `IBM_BOB_PROFILE_TTL_MS` | `86400000` | Age after which the cached profile is refetched. |
 | `IBM_BOB_BUDGET_TIMEOUT_MS` | `5000` | Timeout for the Bobcoin budget lookup. |
+| `IBM_BOB_RATE_CACHE` | `${XDG_CACHE_HOME:-~/.cache}/opencode/ibm-bob/rates.json` | Learned Bobcoin rate cache. |
 | `IBM_BOB_DEBUG` | `false` | Log discovery, token and login steps. |
 
 ### Adapter
@@ -256,7 +293,7 @@ place:
 
 ```bash
 bun install
-bun test        # 107 tests
+bun test        # 125 tests
 bun run typecheck
 ```
 
@@ -276,14 +313,16 @@ key:
 
 Also verified locally:
 
-- `bun test` — 107 tests covering catalog parsing (including the API-key payload
+- `bun test` — 125 tests covering catalog parsing (including the API-key payload
   shape, the `exposed` and `completion_only` filters), per-million price
   conversion, catalog cache round-trip and base-URL scoping, fallback and
   override model building, the `Apikey`/`Bearer` header rules, credential
   resolution order, SSO expiry/refresh/persistence, profile parsing and
   selection, profile cache round-trip and origin scoping, the routing-header
   precedence, Bobcoin parsing from both JSON and streamed responses, the
-  Bobcoin formatting ladder, the budget lookup, and the `config`/`auth` hooks.
+  Bobcoin formatting ladder, the budget lookup, the per-model rate fit
+  (flat rates, split input/output rates, degenerate and noisy observations) and
+  its cache, and the `config`/`auth` hooks.
 - `tsc --noEmit` — clean.
 - Against a local stub of the Bob API, OpenCode issued
   `GET /inference/v1/model/info` and then `POST /inference/v1/chat/completions`
@@ -308,6 +347,12 @@ Bobcoin reporting was verified against the same live endpoint: a completion
 reported `usage.credits` of `0.00004`, the session accumulator picked it up
 without disturbing the response OpenCode consumes, and `bob_usage` returned the
 team's live figure from `/admin/v1/teams/{team}/users/{member}`.
+
+Model pricing was verified the same way: rates measured by hand against the
+live endpoint (`premium` at exactly 2.000 Bobcoins per million tokens, `fast`
+around 0.80 in / 0.84 out) were then recovered by the plugin from ordinary
+traffic — `premium 2.000 in / 2.000 out`, `fast 0.829 in / 0.837 out` — and
+`opencode stats` moved from `$0.00` to a populated figure.
 
 Not verified: multi-instance and multi-team accounts, which were exercised only
 against parsed payloads and not a live account exposing more than one pair; and

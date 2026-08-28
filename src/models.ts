@@ -1,4 +1,5 @@
 import type { BobDiscoveredModel } from "./catalog.ts"
+import type { BobRate } from "./rates.ts"
 import {
   DEFAULT_CONTEXT_WINDOW,
   DEFAULT_MAX_TOKENS,
@@ -43,6 +44,29 @@ const KNOWN_NAMES: Record<string, string> = {
   "bob-3-pro-preview": "IBM Bob 3 Pro Preview",
 }
 
+/**
+ * Prices a model in Bobcoins per million tokens.
+ *
+ * OpenCode multiplies these by the token counts to fill its cost column, which
+ * would otherwise stay at zero for every Bob model. Cache tokens are charged at
+ * the input rate, which is what Bob's usage payload implies.
+ */
+function bobcoinCost(
+  catalog: { input: number; output: number; cacheRead: number; cacheWrite: number },
+  rate?: BobRate,
+): { input: number; output: number; cache_read: number; cache_write: number } {
+  const declared = catalog.input > 0 || catalog.output > 0
+  if (declared || !rate) {
+    return {
+      input: catalog.input,
+      output: catalog.output,
+      cache_read: catalog.cacheRead,
+      cache_write: catalog.cacheWrite,
+    }
+  }
+  return { input: rate.input, output: rate.output, cache_read: rate.input, cache_write: rate.input }
+}
+
 export function modelName(id: string): string {
   const known = KNOWN_NAMES[id]
   if (known) return known
@@ -66,7 +90,10 @@ function inputOverride(): Modality[] | undefined {
  * catalog when one is available and from `IBM_BOB_MODELS` otherwise. Every
  * discovered value can be overridden through the matching environment variable.
  */
-export function buildModels(discovered?: BobDiscoveredModel[]): Record<string, ProviderModelConfig> {
+export function buildModels(
+  discovered?: BobDiscoveredModel[],
+  rates: Record<string, BobRate> = {},
+): Record<string, ProviderModelConfig> {
   const reasoningModels = new Set(envCsv("IBM_BOB_REASONING_MODELS"))
   const reasoning = envOptionalBool("IBM_BOB_REASONING")
   const input = inputOverride()
@@ -85,12 +112,9 @@ export function buildModels(discovered?: BobDiscoveredModel[]): Record<string, P
         reasoning: reasoning === true || reasoningModels.has(model.id) || (reasoning === undefined && model.reasoning),
         temperature: true,
         tool_call: true,
-        cost: {
-          input: model.cost.input,
-          output: model.cost.output,
-          cache_read: model.cost.cacheRead,
-          cache_write: model.cost.cacheWrite,
-        },
+        // Bob reports a zero token price and bills in Bobcoins instead, so the
+        // rate learned from real responses is used when the catalog says zero.
+        cost: bobcoinCost(model.cost, rates[model.id]),
         limit: {
           context: context ?? model.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
           output: maxTokens ?? model.maxTokens ?? DEFAULT_MAX_TOKENS,
@@ -112,7 +136,7 @@ export function buildModels(discovered?: BobDiscoveredModel[]): Record<string, P
       reasoning: reasoning === true || reasoningModels.has(id),
       temperature: true,
       tool_call: true,
-      cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+      cost: bobcoinCost({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, rates[id]),
       limit: {
         context: context ?? DEFAULT_CONTEXT_WINDOW,
         output: maxTokens ?? DEFAULT_MAX_TOKENS,
