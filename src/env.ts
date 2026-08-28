@@ -4,7 +4,7 @@ import { join } from "node:path"
 
 export const PROVIDER_ID = "ibm-bob"
 export const PROVIDER_NAME = "IBM Bob"
-export const PLUGIN_VERSION = "0.3.0"
+export const PLUGIN_VERSION = "0.4.0"
 
 export const DEFAULT_BOB_ORIGIN = "https://api.us-east.bob.ibm.com"
 export const DEFAULT_BASE_URL = `${DEFAULT_BOB_ORIGIN}/inference/v1`

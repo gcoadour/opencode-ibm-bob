@@ -1,11 +1,11 @@
 import type { BobDiscoveredModel } from "./catalog.ts"
-import type { BobRate } from "./rates.ts"
 import {
   DEFAULT_CONTEXT_WINDOW,
   DEFAULT_MAX_TOKENS,
   DEFAULT_MODELS,
   env,
   envCsv,
+  log,
   envOptionalBool,
   envOptionalInt,
 } from "./env.ts"
@@ -44,25 +44,74 @@ const KNOWN_NAMES: Record<string, string> = {
   "bob-3-pro-preview": "IBM Bob 3 Pro Preview",
 }
 
+/** Bobcoins per million tokens. */
+export interface BobRate {
+  input: number
+  output: number
+}
+
 /**
- * Prices a model in Bobcoins per million tokens.
+ * What Bob charges per model, in Bobcoins per million tokens.
  *
- * OpenCode multiplies these by the token counts to fill its cost column, which
- * would otherwise stay at zero for every Bob model. Cache tokens are charged at
- * the input rate, which is what Bob's usage payload implies.
+ * Bob publishes no price — every `/model/info` entry reports
+ * `input_cost_per_token: 0` — and only reveals the amount on each response, so
+ * these were measured against the live `us-east` endpoint and reproduce the
+ * reported credits exactly. Override them with `IBM_BOB_RATES` if your account
+ * or plan is priced differently.
+ */
+export const BOBCOIN_RATES: Record<string, BobRate> = {
+  premium: { input: 2, output: 2 },
+  "premium-ide": { input: 2, output: 2 },
+  "premium-shell": { input: 2, output: 2 },
+  "sonnet-4.5": { input: 2, output: 2 },
+  "wxO-model": { input: 2, output: 2 },
+  ultra: { input: 2.5, output: 2.5 },
+  fast: { input: 0.8, output: 0.84 },
+  explorer: { input: 0.8, output: 0.84 },
+  "granite-8b-code-instruct": { input: 0, output: 0 },
+  "gpt-oss-20b": { input: 0, output: 0 },
+  "openai/gpt-oss-20b": { input: 0, output: 0 },
+  "rnj-1-test": { input: 0, output: 0 },
+  "rnj-1-nextedit-v1-0": { input: 0, output: 0 },
+}
+
+/** `IBM_BOB_RATES` holds `model=input:output` pairs, e.g. `premium=2:2,fast=0.8:0.84`. */
+function rateOverrides(): Record<string, BobRate> {
+  const rates: Record<string, BobRate> = {}
+  for (const entry of envCsv("IBM_BOB_RATES")) {
+    const [id, pair] = entry.split("=", 2)
+    const [input, output] = (pair ?? "").split(":", 2).map(Number)
+    if (!id || !Number.isFinite(input!) || !Number.isFinite(output!) || input! < 0 || output! < 0) {
+      log(`ignoring the malformed IBM_BOB_RATES entry ${JSON.stringify(entry)}`, "warn")
+      continue
+    }
+    rates[id] = { input: input!, output: output! }
+  }
+  return rates
+}
+
+/**
+ * Prices a model in Bobcoins per million tokens, so OpenCode's cost column
+ * shows the Bobcoin amount instead of the flat zero Bob's catalog implies.
+ * Cache tokens are charged at the input rate.
  */
 function bobcoinCost(
+  id: string,
   catalog: { input: number; output: number; cacheRead: number; cacheWrite: number },
-  rate?: BobRate,
+  overrides: Record<string, BobRate>,
 ): { input: number; output: number; cache_read: number; cache_write: number } {
-  const declared = catalog.input > 0 || catalog.output > 0
-  if (declared || !rate) {
+  // A price Bob actually declares always wins over the measured table.
+  if (catalog.input > 0 || catalog.output > 0) {
     return {
       input: catalog.input,
       output: catalog.output,
       cache_read: catalog.cacheRead,
       cache_write: catalog.cacheWrite,
     }
+  }
+  const rate = overrides[id] ?? BOBCOIN_RATES[id]
+  if (!rate) {
+    return { input: 0, output: 0, cache_read: 0, cache_write: 0 }
   }
   return { input: rate.input, output: rate.output, cache_read: rate.input, cache_write: rate.input }
 }
@@ -90,10 +139,8 @@ function inputOverride(): Modality[] | undefined {
  * catalog when one is available and from `IBM_BOB_MODELS` otherwise. Every
  * discovered value can be overridden through the matching environment variable.
  */
-export function buildModels(
-  discovered?: BobDiscoveredModel[],
-  rates: Record<string, BobRate> = {},
-): Record<string, ProviderModelConfig> {
+export function buildModels(discovered?: BobDiscoveredModel[]): Record<string, ProviderModelConfig> {
+  const overrides = rateOverrides()
   const reasoningModels = new Set(envCsv("IBM_BOB_REASONING_MODELS"))
   const reasoning = envOptionalBool("IBM_BOB_REASONING")
   const input = inputOverride()
@@ -114,7 +161,7 @@ export function buildModels(
         tool_call: true,
         // Bob reports a zero token price and bills in Bobcoins instead, so the
         // rate learned from real responses is used when the catalog says zero.
-        cost: bobcoinCost(model.cost, rates[model.id]),
+        cost: bobcoinCost(model.id, model.cost, overrides),
         limit: {
           context: context ?? model.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
           output: maxTokens ?? model.maxTokens ?? DEFAULT_MAX_TOKENS,
@@ -136,7 +183,7 @@ export function buildModels(
       reasoning: reasoning === true || reasoningModels.has(id),
       temperature: true,
       tool_call: true,
-      cost: bobcoinCost({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, rates[id]),
+      cost: bobcoinCost(id, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, overrides),
       limit: {
         context: context ?? DEFAULT_CONTEXT_WINDOW,
         output: maxTokens ?? DEFAULT_MAX_TOKENS,

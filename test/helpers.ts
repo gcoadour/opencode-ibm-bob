@@ -26,7 +26,7 @@ const IBM_BOB_KEYS = [
   "IBM_BOB_PROFILE_CACHE",
   "IBM_BOB_PROFILE_DISCOVERY_TIMEOUT_MS",
   "IBM_BOB_PROFILE_TTL_MS",
-  "IBM_BOB_RATE_CACHE",
+  "IBM_BOB_RATES",
   "IBM_BOB_REASONING",
   "IBM_BOB_REASONING_MODELS",
   "IBM_BOB_READ_BOBSHELL_SETTINGS",
@@ -49,7 +49,6 @@ export function resetEnv(): void {
   mkdirSync(CACHE_DIR, { recursive: true })
   process.env.IBM_BOB_CATALOG_CACHE = join(CACHE_DIR, "catalog.json")
   process.env.IBM_BOB_PROFILE_CACHE = join(CACHE_DIR, "profile.json")
-  process.env.IBM_BOB_RATE_CACHE = join(CACHE_DIR, "rates.json")
 }
 
 export function jwt(payload: Record<string, unknown>): string {

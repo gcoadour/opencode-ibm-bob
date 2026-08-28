@@ -1,7 +1,6 @@
 import { isRecord, readBoundedResponseBody, truncateHttpBody } from "./catalog.ts"
 import { DEFAULT_BUDGET_TIMEOUT_MS, adminBaseUrl, envInt, errorMessage, log, routingHeaders } from "./env.ts"
 import type { BobProfile } from "./profile.ts"
-import type { BobRates } from "./rates.ts"
 
 /**
  * Bob prices usage in Bobcoins rather than per token: `/model/info` reports a
@@ -92,12 +91,6 @@ export function creditsFromBody(body: string): number | undefined {
 export class BobSpend {
   private credits = 0
   private requests = 0
-  private readonly rates?: BobRates
-
-  // A parameter property would not survive Node's type-stripping loader.
-  constructor(rates?: BobRates) {
-    this.rates = rates
-  }
 
   record(credits: number): void {
     this.credits += credits
@@ -117,7 +110,7 @@ export class BobSpend {
    * Extracts the spend from a response without disturbing the one OpenCode
    * consumes, and never lets an accounting failure break a request.
    */
-  observe(response: Response, modelId?: string): void {
+  observe(response: Response): void {
     const type = response.headers.get("content-type") ?? ""
     if (!/json|event-stream/i.test(type) || !response.body) return
     let clone: Response
@@ -129,11 +122,7 @@ export class BobSpend {
     void (async () => {
       try {
         const usage = usageFromBody(await readBoundedResponseBody(clone))
-        if (!usage) return
-        this.record(usage.credits)
-        // Bob publishes no price list, so what it charged here is the only way
-        // to learn what this model costs.
-        if (modelId) this.rates?.record(modelId, usage.inputTokens, usage.outputTokens, usage.credits)
+        if (usage) this.record(usage.credits)
       } catch (error) {
         log(`could not read the Bobcoin cost of a response: ${errorMessage(error)}`)
       }

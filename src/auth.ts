@@ -140,19 +140,6 @@ export class BobTokenResolver {
   }
 }
 
-/** The model a completion request targets, used to attribute its Bobcoin cost. */
-function requestedModel(init?: RequestInit): string | undefined {
-  if (typeof init?.body !== "string") return undefined
-  try {
-    const parsed: unknown = JSON.parse(init.body)
-    if (typeof parsed !== "object" || parsed === null) return undefined
-    const model = (parsed as { model?: unknown }).model
-    return typeof model === "string" && model ? model : undefined
-  } catch {
-    return undefined
-  }
-}
-
 function headersToRecord(init?: HeadersInit): Record<string, string | null | undefined> {
   const record: Record<string, string | null | undefined> = {}
   if (!init) return record
@@ -194,7 +181,7 @@ export function createBobFetch(
     }
     const response = await fetch(input, { ...init, headers: final })
     // Bob bills in Bobcoins and reports the amount on the response itself.
-    spend?.observe(response, requestedModel(init))
+    spend?.observe(response)
     return response
   }
 }

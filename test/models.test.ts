@@ -100,33 +100,59 @@ test("modelName falls back to a title-cased id", () => {
 })
 
 describe("Bobcoin pricing", () => {
-  test("prices a model with the rate learned from Bob's own charges", () => {
-    const models = buildModels(
-      [{ id: "premium", reasoning: false, supportsVision: false, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
-      { premium: { input: 2, output: 2, samples: 4 } },
-    )
-    expect(models.premium?.cost).toEqual({ input: 2, output: 2, cache_read: 2, cache_write: 2 })
+  const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+  const discovered = (id: string, cost = zero) => [{ id, reasoning: false, supportsVision: false, cost }]
+
+  test("prices a model from the measured Bobcoin table", () => {
+    expect(buildModels(discovered("premium")).premium?.cost).toEqual({
+      input: 2,
+      output: 2,
+      cache_read: 2,
+      cache_write: 2,
+    })
+    expect(buildModels(discovered("ultra")).ultra?.cost.input).toBe(2.5)
   })
 
-  test("keeps a price Bob actually declared, rather than the learned one", () => {
-    const models = buildModels(
-      [{ id: "premium", reasoning: false, supportsVision: false, cost: { input: 3, output: 15, cacheRead: 1, cacheWrite: 2 } }],
-      { premium: { input: 2, output: 2, samples: 4 } },
-    )
-    expect(models.premium?.cost).toEqual({ input: 3, output: 15, cache_read: 1, cache_write: 2 })
+  test("keeps the split input/output rate Bob applies to fast and explorer", () => {
+    const cost = buildModels(discovered("fast")).fast?.cost
+    expect(cost?.input).toBe(0.8)
+    expect(cost?.output).toBe(0.84)
   })
 
-  test("leaves an unlearned model at zero", () => {
-    const models = buildModels(
-      [{ id: "premium", reasoning: false, supportsVision: false, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
-      {},
-    )
-    expect(models.premium?.cost).toEqual({ input: 0, output: 0, cache_read: 0, cache_write: 0 })
+  test("prices Bob's free models at zero", () => {
+    expect(buildModels(discovered("gpt-oss-20b"))["gpt-oss-20b"]?.cost.input).toBe(0)
+  })
+
+  test("leaves an unknown model at zero rather than guessing", () => {
+    expect(buildModels(discovered("some-new-route"))["some-new-route"]?.cost).toEqual({
+      input: 0,
+      output: 0,
+      cache_read: 0,
+      cache_write: 0,
+    })
+  })
+
+  test("keeps a price Bob actually declared", () => {
+    const cost = buildModels(discovered("premium", { input: 3, output: 15, cacheRead: 1, cacheWrite: 2 })).premium?.cost
+    expect(cost).toEqual({ input: 3, output: 15, cache_read: 1, cache_write: 2 })
+  })
+
+  test("lets IBM_BOB_RATES override the table", () => {
+    process.env.IBM_BOB_RATES = "premium=5:7,some-new-route=1:1.5"
+    const models = buildModels([...discovered("premium"), ...discovered("some-new-route")])
+    expect(models.premium?.cost).toEqual({ input: 5, output: 7, cache_read: 5, cache_write: 5 })
+    expect(models["some-new-route"]?.cost.output).toBe(1.5)
+  })
+
+  test("ignores a malformed IBM_BOB_RATES entry", () => {
+    process.env.IBM_BOB_RATES = "premium=nonsense,ultra=-1:2"
+    const models = buildModels([...discovered("premium"), ...discovered("ultra")])
+    expect(models.premium?.cost.input).toBe(2)
+    expect(models.ultra?.cost.input).toBe(2.5)
   })
 
   test("prices fallback models too", () => {
     process.env.IBM_BOB_MODELS = "premium"
-    const models = buildModels(undefined, { premium: { input: 2, output: 2, samples: 4 } })
-    expect(models.premium?.cost.input).toBe(2)
+    expect(buildModels().premium?.cost.input).toBe(2)
   })
 })
