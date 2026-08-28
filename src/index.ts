@@ -14,9 +14,10 @@ import {
   type StoredAuth,
 } from "./auth.ts"
 import { fetchBobModelCatalog, readCachedCatalog, writeCachedCatalog, type BobDiscoveredModel } from "./catalog.ts"
-import { BobSpend, fetchBobBudget, formatBobcoins, formatDollars } from "./cost.ts"
+import { BobSpend, fetchBobBudget, formatBobcoins, formatDollars, readCachedBudget, writeCachedBudget } from "./cost.ts"
 import { BobProfileResolver, type BobProfile } from "./profile.ts"
 import {
+  DEFAULT_BUDGET_TTL_MS,
   DEFAULT_CATALOG_TTL_MS,
   PROVIDER_ID,
   PROVIDER_NAME,
@@ -62,6 +63,7 @@ export const IbmBobPlugin = async ({ client }: PluginInput): Promise<Hooks> => {
 
   let refreshing: Promise<string | undefined> | undefined
   let catalogRefreshed = false
+  let budgetRefreshed = false
 
   /**
    * Resolves the instance/team pair Bob routes with. The catalog and every
@@ -100,6 +102,33 @@ export const IbmBobPlugin = async ({ client }: PluginInput): Promise<Hooks> => {
     void discoverCatalog(token)
   }
 
+  /**
+   * The TUI sidebar has no credential access of its own (see tui.tsx), so it
+   * reads the team budget from this cache instead. Refreshed once per session
+   * start, like the catalog above.
+   */
+  function refreshBudgetInBackground(token: string): void {
+    if (budgetRefreshed) return
+    budgetRefreshed = true
+    const ttl = envInt("IBM_BOB_BUDGET_TTL_MS", DEFAULT_BUDGET_TTL_MS)
+    const cached = readCachedBudget()
+    if (cached && Date.now() - cached.updated < ttl) return
+    void (async () => {
+      try {
+        const profile = await discoverProfile(token)
+        if (!profile?.teamId || !profile.instanceUserId) return
+        const budget = await fetchBobBudget(token, authSchemeFor(token), {
+          ...profile,
+          teamId: profile.teamId,
+          instanceUserId: profile.instanceUserId,
+        })
+        writeCachedBudget(profile.teamName ?? profile.teamId, budget)
+      } catch (error) {
+        log(`background budget refresh failed: ${errorMessage(error)}`, "warn")
+      }
+    })()
+  }
+
   async function persist(credentials: BobCredentials): Promise<void> {
     try {
       await authApi.auth.set({ path: { id: PROVIDER_ID }, body: { type: "oauth", ...credentials } })
@@ -132,7 +161,10 @@ export const IbmBobPlugin = async ({ client }: PluginInput): Promise<Hooks> => {
     if (info.type !== "oauth") return undefined
 
     const token = info.expires > Date.now() ? info.access : await refreshStored(info)
-    if (token) refreshCatalogInBackground(token)
+    if (token) {
+      refreshCatalogInBackground(token)
+      refreshBudgetInBackground(token)
+    }
     return token
   }
 
@@ -210,6 +242,7 @@ export const IbmBobPlugin = async ({ client }: PluginInput): Promise<Hooks> => {
               })
               usage = budget.usage
               limit = budget.budgetLimit ?? limit
+              writeCachedBudget(team, budget)
             } catch (error) {
               log(`budget lookup failed, using the profile figure: ${errorMessage(error)}`, "warn")
             }

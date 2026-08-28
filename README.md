@@ -177,6 +177,47 @@ Amounts use Bob Shell's precision ladder, with one finer step: a single request
 can cost less than `0.0001` Bobcoin, which Bob Shell's last rung prints as a
 flat `0.0000`.
 
+### Sidebar Bobcoins widget
+
+OpenCode's TUI shows a "Context" widget in the session sidebar with the
+tokens used and the percentage of the context window they fill. This plugin
+ships an optional TUI-side counterpart that disables OpenCode's own
+`internal:sidebar-context` widget and adds the team's Bobcoin usage against
+its plan total underneath. OpenTUI has no image component at all (checked
+its compiled component catalogue: text, box, and a handful of other
+text-only primitives, no image/Sixel/Kitty support), so bob.ibm.com/pricing's
+coin icon is approximated with the Unicode draughts-piece glyphs `⛀⛁` —
+two overlapping discs, without depending on an emoji font being installed:
+
+```
+Context  12,480 tokens  34% used
+⛀⛁ 0.38 / 40.00 Bobcoins
+```
+
+Reading the plan total needs a live IBM Bob credential, and the TUI process
+never has one — it only talks to the local OpenCode server over HTTP, which
+exposes no way to read back a stored secret. So the *server* half of the
+plugin (`src/index.ts`) resolves the team budget the same way the `bob_usage`
+tool does (see [Reading the current usage](#reading-the-current-usage)) once
+per session start, and caches it to
+`$XDG_CACHE_HOME/opencode/ibm-bob/budget.json` (`~/.cache/...` by default,
+override with `IBM_BOB_BUDGET_CACHE`); the sidebar widget polls that file
+every 15 seconds. Until the first fetch lands, or if it fails (offline, no
+team resolved, member API key with no team), it shows "usage unavailable"
+rather than a stale or wrong figure.
+
+Enable it by adding the plugin's `tui` entry point alongside the main one:
+
+```json
+{
+  "plugin": ["opencode-ibm-bob", "opencode-ibm-bob/tui"]
+}
+```
+
+This half of the plugin only runs in the OpenCode TUI process — it has no
+effect on `opencode run`, `opencode serve`, or the provider/auth behavior
+described above.
+
 ## Instance and team routing
 
 Bob routes every request with an instance and, for SSO credentials, a team.

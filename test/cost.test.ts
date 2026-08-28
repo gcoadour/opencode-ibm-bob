@@ -1,5 +1,18 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { BobSpend, creditsFromBody, extractCredits, fetchBobBudget, formatBobcoins, formatDollars } from "../src/cost.ts"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import {
+  BobSpend,
+  budgetCacheFile,
+  creditsFromBody,
+  extractCredits,
+  fetchBobBudget,
+  formatBobcoins,
+  formatDollars,
+  readCachedBudget,
+  writeCachedBudget,
+} from "../src/cost.ts"
 import { resetEnv } from "./helpers.ts"
 
 const originalFetch = globalThis.fetch
@@ -166,5 +179,37 @@ describe("formatDollars", () => {
   test("never prints a negative or NaN amount", () => {
     expect(formatDollars(0)).toBe("$0.00")
     expect(formatDollars(Number.NaN)).toBe("$0.00")
+  })
+})
+
+describe("budget cache", () => {
+  let cacheDir: string
+
+  beforeEach(() => {
+    cacheDir = mkdtempSync(join(tmpdir(), "ibm-bob-budget-cache-"))
+    process.env.IBM_BOB_BUDGET_CACHE = join(cacheDir, "budget.json")
+  })
+
+  afterEach(() => {
+    rmSync(cacheDir, { recursive: true, force: true })
+  })
+
+  test("round-trips a budget through the cache file, the TUI process' only way to read it", () => {
+    writeCachedBudget("Team Default", { usage: 0.384, budgetLimit: 40 })
+    const cached = readCachedBudget()
+    expect(cached?.team).toBe("Team Default")
+    expect(cached?.budget).toEqual({ usage: 0.384, budgetLimit: 40 })
+    expect(cached?.updated).toBeGreaterThan(0)
+  })
+
+  test("keeps a genuinely zero usage figure, unlike positiveNumber's `> 0` check", () => {
+    writeCachedBudget("Team Default", { usage: 0 })
+    expect(readCachedBudget()?.budget).toEqual({ usage: 0 })
+  })
+
+  test("ignores an unreadable or malformed cache", () => {
+    expect(readCachedBudget()).toBeUndefined()
+    writeFileSync(budgetCacheFile(), "not json")
+    expect(readCachedBudget()).toBeUndefined()
   })
 })

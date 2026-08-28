@@ -1,5 +1,8 @@
-import { isRecord, readBoundedResponseBody, truncateHttpBody } from "./catalog.ts"
-import { DEFAULT_BUDGET_TIMEOUT_MS, adminBaseUrl, envInt, errorMessage, log, routingHeaders } from "./env.ts"
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { homedir } from "node:os"
+import { dirname, join } from "node:path"
+import { isRecord, positiveNumber, readBoundedResponseBody, truncateHttpBody } from "./catalog.ts"
+import { DEFAULT_BUDGET_TIMEOUT_MS, adminBaseUrl, env, envInt, errorMessage, log, routingHeaders } from "./env.ts"
 import { BOBCOIN_USD } from "./models.ts"
 import type { BobProfile } from "./profile.ts"
 
@@ -185,5 +188,57 @@ export async function fetchBobBudget(
     throw error
   } finally {
     clearTimeout(timeout)
+  }
+}
+
+export interface CachedBudget {
+  updated: number
+  team: string
+  budget: BobBudget
+}
+
+/**
+ * Fetching the team budget needs a live token, which only the server process
+ * (running the auth loader) can resolve. The TUI process has no credential
+ * access at all, so it reads the figure the server last cached here instead
+ * of calling Bob directly.
+ */
+export function budgetCacheFile(): string {
+  const explicit = env("IBM_BOB_BUDGET_CACHE")
+  if (explicit) return explicit
+  const base = env("XDG_CACHE_HOME") ?? join(homedir(), ".cache")
+  return join(base, "opencode", "ibm-bob", "budget.json")
+}
+
+/** Unlike `positiveNumber`, a fresh team can genuinely have spent zero. */
+function nonNegativeNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined
+}
+
+export function readCachedBudget(): CachedBudget | undefined {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(budgetCacheFile(), "utf8"))
+    if (!isRecord(parsed) || !isRecord(parsed.budget)) return undefined
+    const usage = nonNegativeNumber(parsed.budget.usage)
+    if (usage === undefined) return undefined
+    const budgetLimit = nonNegativeNumber(parsed.budget.budgetLimit)
+    return {
+      updated: positiveNumber(parsed.updated) ?? 0,
+      team: typeof parsed.team === "string" ? parsed.team : "unknown",
+      budget: { usage, ...(budgetLimit !== undefined ? { budgetLimit } : {}) },
+    }
+  } catch {
+    return undefined
+  }
+}
+
+export function writeCachedBudget(team: string, budget: BobBudget): void {
+  const payload: CachedBudget = { updated: Date.now(), team, budget }
+  try {
+    const file = budgetCacheFile()
+    mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
+    writeFileSync(file, `${JSON.stringify(payload, null, 2)}\n`, { encoding: "utf8", mode: 0o600 })
+  } catch (error) {
+    log(`failed to cache the Bobcoin budget: ${errorMessage(error)}`)
   }
 }
