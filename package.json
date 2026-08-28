@@ -1,6 +1,6 @@
 {
   "name": "opencode-ibm-bob",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "description": "OpenCode plugin that registers IBM Bob / IBM-approved enterprise model endpoints as an OpenCode provider.",
   "keywords": [
