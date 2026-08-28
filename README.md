@@ -122,38 +122,35 @@ is scoped to the base URL that produced it, and holds no credentials.
 
 ## Usage cost (Bobcoins)
 
-Bob does not price per token — `/model/info` reports a zero token price, so
-OpenCode's own cost column stays at `$0.00`. Bob bills in **Bobcoins** instead
-and reports the amount spent as `usage.credits` on each inference response,
-which is the field Bob Shell reads.
+Bob does not price per token — `/model/info` reports a zero token price. It bills
+in **Bobcoins** instead, reporting the amount spent as `usage.credits` on each
+inference response, which is the field Bob Shell reads. One Bobcoin is worth
+$0.50, the trial plan's 40 Bobcoins being priced at $20.
 
 ### Pricing the models
 
 Bob publishes no rate: every entry in `/model/info` reports
-`input_cost_per_token: 0`, and the only figure Bob returns is the amount charged
-on each response. The plugin therefore carries a table of rates measured against
-the live `us-east` endpoint, in Bobcoins per million tokens:
+`input_cost_per_token: 0`, and the only figure Bob returns is the Bobcoin amount
+charged on each response. The plugin therefore carries a table of rates measured
+against the live `us-east` endpoint, converted to dollars at the plan's rate of
+**40 Bobcoins for $20**:
 
-| Models | Input | Output |
-| --- | --- | --- |
-| `premium`, `premium-ide`, `premium-shell`, `sonnet-4.5`, `wxO-model` | 2.0 | 2.0 |
-| `ultra` | 2.5 | 2.5 |
-| `fast`, `explorer` | 0.8 | 0.84 |
-| `granite-8b-code-instruct`, `gpt-oss-20b`, `openai/gpt-oss-20b`, `rnj-1-test`, `rnj-1-nextedit-v1-0` | 0 | 0 |
+| Models | Bobcoins / 1M | Dollars / 1M in | Dollars / 1M out |
+| --- | --- | --- | --- |
+| `premium`, `premium-ide`, `premium-shell`, `sonnet-4.5`, `wxO-model` | 2.0 in / 2.0 out | $1.00 | $1.00 |
+| `ultra` | 2.5 / 2.5 | $1.25 | $1.25 |
+| `fast`, `explorer` | 0.8 / 0.84 | $0.40 | $0.42 |
+| `granite-8b-code-instruct`, `gpt-oss-20b`, `openai/gpt-oss-20b`, `rnj-1-test`, `rnj-1-nextedit-v1-0` | 0 | free | free |
 
-Those rates fill each model's `cost`, so **OpenCode's cost column shows the
-Bobcoin amount** instead of a flat zero. Cache tokens are charged at the input
-rate, a route Bob does price in the catalog keeps its declared price, and a
-model missing from the table stays at zero rather than being guessed at.
+Those dollar figures fill each model's `cost`, so **OpenCode's cost column shows
+real money** instead of the flat zero Bob's catalog implies. Cache tokens are
+charged at the input rate, a route Bob does price in the catalog keeps its
+declared price, and a model missing from the table stays at zero rather than
+being guessed at.
 
-Two things worth knowing:
-
-- OpenCode formats that column as `$0.02`. The dollar sign is hardcoded in
-  OpenCode itself, with no configuration or plugin hook to change it, so the
-  figure is Bobcoins wearing the wrong symbol. `bob_usage` is the unambiguous
-  reading.
-- The rates come from one trial account. If your plan is priced differently,
-  override them with `IBM_BOB_RATES`, which takes `model=input:output` pairs:
+The rates come from one trial account. If your plan is priced differently,
+override them with `IBM_BOB_RATES`, which takes `model=input:output` pairs **in
+Bobcoins** and is converted the same way:
 
 ```bash
 export IBM_BOB_RATES="premium=2:2,fast=0.8:0.84"
@@ -164,8 +161,8 @@ export IBM_BOB_RATES="premium=2:2,fast=0.8:0.84"
 The plugin registers a `bob_usage` tool that reports both figures:
 
 ```
-This session so far: 0.0005 Bobcoins over 5 billed response(s).
-Team default: 0.347 of 40.00 Bobcoins used, 39.65 left.
+This session so far: 0.000040 Bobcoins ($0.000020) over 1 billed response(s).
+Team default: 0.384/40.00 BOBcoin used ($0.19 of $20.00), 39.62 left.
 ```
 
 - **Session** — the credits Bob charged for the responses this OpenCode process
@@ -291,7 +288,7 @@ place:
 
 ```bash
 bun install
-bun test        # 115 tests
+bun test        # 118 tests
 bun run typecheck
 ```
 
@@ -311,15 +308,16 @@ key:
 
 Also verified locally:
 
-- `bun test` — 115 tests covering catalog parsing (including the API-key payload
+- `bun test` — 118 tests covering catalog parsing (including the API-key payload
   shape, the `exposed` and `completion_only` filters), per-million price
   conversion, catalog cache round-trip and base-URL scoping, fallback and
   override model building, the `Apikey`/`Bearer` header rules, credential
   resolution order, SSO expiry/refresh/persistence, profile parsing and
   selection, profile cache round-trip and origin scoping, the routing-header
   precedence, Bobcoin parsing from both JSON and streamed responses, the
-  Bobcoin formatting ladder, the budget lookup, the Bobcoin rate table and its
-  `IBM_BOB_RATES` override, and the `config`/`auth` hooks.
+  Bobcoin and dollar formatting ladders, the budget lookup, the rate table with
+  its Bobcoin-to-dollar conversion and its `IBM_BOB_RATES` override, and the
+  `config`/`auth` hooks.
 - `tsc --noEmit` — clean.
 - Against a local stub of the Bob API, OpenCode issued
   `GET /inference/v1/model/info` and then `POST /inference/v1/chat/completions`
@@ -349,6 +347,9 @@ Every rate in the table was measured against the live endpoint, two requests per
 model with different output lengths so the input and output rates could be
 separated; each pair reproduces the credits Bob reported. `opencode stats` then
 moved from `$0.00` to a populated figure.
+
+Not verified: the 40 Bobcoins = $20 conversion, which was supplied rather than
+observed — Bob exposes no rate of its own.
 
 Not verified: multi-instance and multi-team accounts, which were exercised only
 against parsed payloads and not a live account exposing more than one pair; and

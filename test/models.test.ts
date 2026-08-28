@@ -103,20 +103,21 @@ describe("Bobcoin pricing", () => {
   const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
   const discovered = (id: string, cost = zero) => [{ id, reasoning: false, supportsVision: false, cost }]
 
-  test("prices a model from the measured Bobcoin table", () => {
+  test("converts the measured Bobcoin rate into dollars", () => {
+    // 2 Bobcoins per million tokens, at 40 Bobcoins for $20.
     expect(buildModels(discovered("premium")).premium?.cost).toEqual({
-      input: 2,
-      output: 2,
-      cache_read: 2,
-      cache_write: 2,
+      input: 1,
+      output: 1,
+      cache_read: 1,
+      cache_write: 1,
     })
-    expect(buildModels(discovered("ultra")).ultra?.cost.input).toBe(2.5)
+    expect(buildModels(discovered("ultra")).ultra?.cost.input).toBe(1.25)
   })
 
   test("keeps the split input/output rate Bob applies to fast and explorer", () => {
     const cost = buildModels(discovered("fast")).fast?.cost
-    expect(cost?.input).toBe(0.8)
-    expect(cost?.output).toBe(0.84)
+    expect(cost?.input).toBe(0.4)
+    expect(cost?.output).toBe(0.42)
   })
 
   test("prices Bob's free models at zero", () => {
@@ -132,27 +133,27 @@ describe("Bobcoin pricing", () => {
     })
   })
 
-  test("keeps a price Bob actually declared", () => {
+  test("keeps a price Bob actually declared, which is already in dollars", () => {
     const cost = buildModels(discovered("premium", { input: 3, output: 15, cacheRead: 1, cacheWrite: 2 })).premium?.cost
     expect(cost).toEqual({ input: 3, output: 15, cache_read: 1, cache_write: 2 })
   })
 
-  test("lets IBM_BOB_RATES override the table", () => {
+  test("converts an IBM_BOB_RATES override, which is expressed in Bobcoins", () => {
     process.env.IBM_BOB_RATES = "premium=5:7,some-new-route=1:1.5"
     const models = buildModels([...discovered("premium"), ...discovered("some-new-route")])
-    expect(models.premium?.cost).toEqual({ input: 5, output: 7, cache_read: 5, cache_write: 5 })
-    expect(models["some-new-route"]?.cost.output).toBe(1.5)
+    expect(models.premium?.cost).toEqual({ input: 2.5, output: 3.5, cache_read: 2.5, cache_write: 2.5 })
+    expect(models["some-new-route"]?.cost.output).toBe(0.75)
   })
 
   test("ignores a malformed IBM_BOB_RATES entry", () => {
     process.env.IBM_BOB_RATES = "premium=nonsense,ultra=-1:2"
     const models = buildModels([...discovered("premium"), ...discovered("ultra")])
-    expect(models.premium?.cost.input).toBe(2)
-    expect(models.ultra?.cost.input).toBe(2.5)
+    expect(models.premium?.cost.input).toBe(1)
+    expect(models.ultra?.cost.input).toBe(1.25)
   })
 
   test("prices fallback models too", () => {
     process.env.IBM_BOB_MODELS = "premium"
-    expect(buildModels().premium?.cost.input).toBe(2)
+    expect(buildModels().premium?.cost.input).toBe(1)
   })
 })

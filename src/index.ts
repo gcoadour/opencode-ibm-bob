@@ -14,7 +14,7 @@ import {
   type StoredAuth,
 } from "./auth.ts"
 import { fetchBobModelCatalog, readCachedCatalog, writeCachedCatalog, type BobDiscoveredModel } from "./catalog.ts"
-import { BobSpend, fetchBobBudget, formatBobcoins } from "./cost.ts"
+import { BobSpend, fetchBobBudget, formatBobcoins, formatDollars } from "./cost.ts"
 import { BobProfileResolver, type BobProfile } from "./profile.ts"
 import {
   DEFAULT_CATALOG_TTL_MS,
@@ -185,7 +185,8 @@ export const IbmBobPlugin = async ({ client }: PluginInput): Promise<Hooks> => {
           // The turn that calls this tool has not been billed yet, so its own
           // cost only appears on the next call.
           const lines = [
-            `This session so far: ${formatBobcoins(spend.total)} Bobcoins over ${spend.count} billed response(s).`,
+            `This session so far: ${formatBobcoins(spend.total)} Bobcoins (${formatDollars(spend.total)}) ` +
+              `over ${spend.count} billed response(s).`,
           ]
 
           const token = await resolver.resolve()
@@ -220,7 +221,8 @@ export const IbmBobPlugin = async ({ client }: PluginInput): Promise<Hooks> => {
             lines.push(`Team ${team}: ${formatBobcoins(usage)} Bobcoins used (no published limit).`)
           } else {
             lines.push(
-              `Team ${team}: ${formatBobcoins(usage)} of ${formatBobcoins(limit)} Bobcoins used, ` +
+              `Team ${team}: ${formatBobcoins(usage)}/${formatBobcoins(limit)} BOBcoin used ` +
+                `(${formatDollars(usage)} of ${formatDollars(limit)}), ` +
                 `${formatBobcoins(Math.max(0, limit - usage))} left.`,
             )
           }

@@ -1,5 +1,6 @@
 import { isRecord, readBoundedResponseBody, truncateHttpBody } from "./catalog.ts"
 import { DEFAULT_BUDGET_TIMEOUT_MS, adminBaseUrl, envInt, errorMessage, log, routingHeaders } from "./env.ts"
+import { BOBCOIN_USD } from "./models.ts"
 import type { BobProfile } from "./profile.ts"
 
 /**
@@ -45,6 +46,15 @@ export function extractUsage(payload: unknown): BobUsage | undefined {
     inputTokens: tokenCount(payload.usage.prompt_tokens),
     outputTokens: tokenCount(payload.usage.completion_tokens),
   }
+}
+
+/** Bobcoins converted to the money they represent. */
+export function formatDollars(bobcoins: number): string {
+  if (!Number.isFinite(bobcoins) || bobcoins <= 0) return "$0.00"
+  const dollars = bobcoins * BOBCOIN_USD
+  if (dollars >= 0.01) return `$${dollars.toFixed(2)}`
+  // A single request costs a fraction of a cent; rounding it to $0.00 hides it.
+  return `$${dollars >= 0.0001 ? dollars.toFixed(4) : dollars.toFixed(6)}`
 }
 
 export function extractCredits(payload: unknown): number | undefined {

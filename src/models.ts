@@ -51,6 +51,12 @@ export interface BobRate {
 }
 
 /**
+ * What a Bobcoin is worth. IBM prices the trial plan's 40 Bobcoins at $20, and
+ * Bob publishes no rate of its own, so this is the only conversion available.
+ */
+export const BOBCOIN_USD = 0.5
+
+/**
  * What Bob charges per model, in Bobcoins per million tokens.
  *
  * Bob publishes no price — every `/model/info` entry reports
@@ -75,7 +81,7 @@ export const BOBCOIN_RATES: Record<string, BobRate> = {
   "rnj-1-nextedit-v1-0": { input: 0, output: 0 },
 }
 
-/** `IBM_BOB_RATES` holds `model=input:output` pairs, e.g. `premium=2:2,fast=0.8:0.84`. */
+/** `IBM_BOB_RATES` holds `model=input:output` pairs in Bobcoins, e.g. `premium=2:2,fast=0.8:0.84`. */
 function rateOverrides(): Record<string, BobRate> {
   const rates: Record<string, BobRate> = {}
   for (const entry of envCsv("IBM_BOB_RATES")) {
@@ -91,9 +97,10 @@ function rateOverrides(): Record<string, BobRate> {
 }
 
 /**
- * Prices a model in Bobcoins per million tokens, so OpenCode's cost column
- * shows the Bobcoin amount instead of the flat zero Bob's catalog implies.
- * Cache tokens are charged at the input rate.
+ * Prices a model in dollars per million tokens, so OpenCode's cost column holds
+ * real money instead of the flat zero Bob's catalog implies. Rates are measured
+ * in Bobcoins, Bob's own billing unit, and converted here. Cache tokens are
+ * charged at the input rate.
  */
 function bobcoinCost(
   id: string,
@@ -113,7 +120,9 @@ function bobcoinCost(
   if (!rate) {
     return { input: 0, output: 0, cache_read: 0, cache_write: 0 }
   }
-  return { input: rate.input, output: rate.output, cache_read: rate.input, cache_write: rate.input }
+  const input = rate.input * BOBCOIN_USD
+  const output = rate.output * BOBCOIN_USD
+  return { input, output, cache_read: input, cache_write: input }
 }
 
 export function modelName(id: string): string {

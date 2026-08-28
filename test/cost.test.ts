@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { BobSpend, creditsFromBody, extractCredits, fetchBobBudget, formatBobcoins } from "../src/cost.ts"
+import { BobSpend, creditsFromBody, extractCredits, fetchBobBudget, formatBobcoins, formatDollars } from "../src/cost.ts"
 import { resetEnv } from "./helpers.ts"
 
 const originalFetch = globalThis.fetch
@@ -148,5 +148,23 @@ describe("fetchBobBudget", () => {
   test("reports an HTTP failure with the response body", async () => {
     globalThis.fetch = (async () => new Response("denied", { status: 403 })) as unknown as typeof fetch
     await expect(fetchBobBudget("token", "Bearer", { instanceId: "instance-1", teamId: "team-1", instanceUserId: "user-1" })).rejects.toThrow(/403 denied/)
+  })
+})
+
+describe("formatDollars", () => {
+  test("converts Bobcoins at the plan's rate of 40 for $20", () => {
+    expect(formatDollars(40)).toBe("$20.00")
+    expect(formatDollars(0.347)).toBe("$0.17")
+  })
+
+  test("keeps a small amount visible rather than rounding it to nothing", () => {
+    expect(formatDollars(0.0005)).toBe("$0.0003")
+    // What a one-line completion actually costs.
+    expect(formatDollars(0.00004)).toBe("$0.000020")
+  })
+
+  test("never prints a negative or NaN amount", () => {
+    expect(formatDollars(0)).toBe("$0.00")
+    expect(formatDollars(Number.NaN)).toBe("$0.00")
   })
 })
