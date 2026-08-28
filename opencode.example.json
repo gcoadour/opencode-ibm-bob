@@ -1,0 +1,11 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["opencode-ibm-bob"],
+  "provider": {
+    "ibm-bob": {
+      "options": {
+        "baseURL": "https://api.us-east.bob.ibm.com/inference/v1"
+      }
+    }
+  }
+}
