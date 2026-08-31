@@ -1,9 +1,0 @@
-{
-  "name": "opencode-ibm-bob-local-tui",
-  "private": true,
-  "type": "module",
-  "main": "./index.ts",
-  "exports": {
-    ".": "./index.ts"
-  }
-}
