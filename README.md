@@ -194,6 +194,15 @@ Context  12,480 tokens  34% used
 ⛀⛁ 0.38 / 40.00 Bobcoins
 ```
 
+When Bob's admin API reports no `budget_limit` for the member — which is
+what the trial account this was built against returns — there is no plan
+total to show, and the line degrades to the usage alone:
+
+```
+Context  0 tokens  0% used
+⛀⛁ 0.402 Bobcoins used
+```
+
 Reading the plan total needs a live IBM Bob credential, and the TUI process
 never has one — it only talks to the local OpenCode server over HTTP, which
 exposes no way to read back a stored secret. So the *server* half of the
@@ -206,13 +215,36 @@ every 15 seconds. Until the first fetch lands, or if it fails (offline, no
 team resolved, member API key with no team), it shows "usage unavailable"
 rather than a stale or wrong figure.
 
-Enable it by adding the plugin's `tui` entry point alongside the main one:
+**TUI plugins are configured in a different file from server plugins.**
+`opencode.json`'s `plugin` array only feeds OpenCode's server process; the
+TUI reads its own `plugin` array from `tui.json` — `.opencode/tui.json` in
+the project, or `~/.config/opencode/tui.json` globally. Listing the plugin
+only in `opencode.json` loads the provider but silently never loads this
+widget.
+
+Both halves come from the same package root, so both files name the same
+entry (there is no `/tui` suffix — OpenCode resolves the TUI half from the
+package's own `exports["./tui"]`):
+
+`opencode.json` — the provider:
 
 ```json
 {
-  "plugin": ["opencode-ibm-bob", "opencode-ibm-bob/tui"]
+  "plugin": ["opencode-ibm-bob"]
 }
 ```
+
+`.opencode/tui.json` — the sidebar widget:
+
+```json
+{
+  "$schema": "https://opencode.ai/tui.json",
+  "plugin": ["opencode-ibm-bob"]
+}
+```
+
+From a checkout, use the repository's absolute path in place of the package
+name in both files — no linking or installing needed.
 
 This half of the plugin only runs in the OpenCode TUI process — it has no
 effect on `opencode run`, `opencode serve`, or the provider/auth behavior
