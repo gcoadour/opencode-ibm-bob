@@ -218,6 +218,26 @@ This half of the plugin only runs in the OpenCode TUI process — it has no
 effect on `opencode run`, `opencode serve`, or the provider/auth behavior
 described above.
 
+#### Testing it from a checkout
+
+Unlike the main entry point, `opencode-ibm-bob/tui` is a subpath export, and
+subpath exports only resolve through real package resolution — pointing
+`plugin` straight at this repository's absolute path (as the
+[Install](#install) section shows for the main entry) does not work for it,
+it resolves silently to nothing. `local-tui/` in this repo is a second
+plugin root with its own `package.json`, re-exporting `../src/tui.tsx`, so a
+plain absolute path works for it the same way it does for the main entry —
+no linking or installing needed:
+
+```json
+{
+  "plugin": [
+    "/absolute/path/to/opencode-ibm-bob",
+    "/absolute/path/to/opencode-ibm-bob/local-tui"
+  ]
+}
+```
+
 ## Instance and team routing
 
 Bob routes every request with an instance and, for SSO credentials, a team.
