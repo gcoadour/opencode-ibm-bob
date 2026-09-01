@@ -1,15 +1,235 @@
 # opencode-ibm-bob
 
-OpenCode plugin for IBM Bob / IBM-approved enterprise model endpoints.
+**Use IBM Bob's models inside [OpenCode](https://opencode.ai).** Browser SSO,
+automatic model discovery, real dollar costs in the cost column, and a Bobcoin
+budget widget in the TUI sidebar.
 
-It is the [OpenCode](https://opencode.ai) counterpart of the Pi extension
+It is the OpenCode counterpart of the Pi extension
 [`pi-bob`](https://github.com/songlining/pi-bob): it registers Bob as the
 `ibm-bob` provider, discovers the model catalog Bob exposes to your account, and
 adds Bob's browser SSO to `opencode auth login`.
 
-The plugin does not scrape Bob, does not read Bob Shell's stored SSO secrets, and
-does not bypass IBM-approved access paths. SSO tokens are obtained through Bob's
-own browser login endpoints and stored in OpenCode's auth store.
+> The plugin does not scrape Bob, does not read Bob Shell's stored SSO secrets,
+> and does not bypass IBM-approved access paths. SSO tokens are obtained through
+> Bob's own browser login endpoints and stored in OpenCode's auth store.
+
+**Contents**
+
+- [Setup in 3 steps](#setup-in-3-steps) — the fastest path
+- [The complete configuration](#the-complete-configuration) — every file and
+  every variable, in one place
+- [Troubleshooting](#troubleshooting)
+- [What it does](#what-it-does)
+- [Model discovery](#model-discovery)
+- [Usage cost (Bobcoins)](#usage-cost-bobcoins)
+- [Sidebar Bobcoins widget](#sidebar-bobcoins-widget)
+- [Instance and team routing](#instance-and-team-routing)
+- [Environment variable reference](#environment-variable-reference)
+- [Development](#development) · [Validation performed](#validation-performed)
+
+## Setup in 3 steps
+
+### 1. Declare the plugin
+
+OpenCode reads **two** config files, and each one feeds a different process:
+
+| File | Read by | Gives you |
+| --- | --- | --- |
+| `opencode.json` (project) or `~/.config/opencode/opencode.json` (global) | the OpenCode **server** | the `ibm-bob` provider, models, auth, the `bob_usage` tool |
+| `.opencode/tui.json` (project) or `~/.config/opencode/tui.json` (global) | the OpenCode **TUI** | the Bobcoin sidebar widget |
+
+Listing the plugin only in `opencode.json` is enough to use Bob's models — the
+second file just adds the sidebar widget. Both name the same package (there is
+no `/tui` suffix: OpenCode resolves the TUI half from the package's own
+`exports["./tui"]`).
+
+`opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["opencode-ibm-bob"]
+}
+```
+
+`.opencode/tui.json` (optional — sidebar widget):
+
+```json
+{
+  "$schema": "https://opencode.ai/tui.json",
+  "plugin": ["opencode-ibm-bob"]
+}
+```
+
+Working from a checkout instead of npm? Put the repository's absolute path in
+place of the package name, in both files — no linking or installing needed:
+
+```json
+{ "plugin": ["/absolute/path/to/opencode-ibm-bob"] }
+```
+
+### 2. Log in
+
+Pick **one** of the two credentials. SSO is the recommended path.
+
+**Bob SSO (browser)**
+
+```bash
+opencode auth login       # pick "IBM Bob", then "IBM Bob SSO (browser)"
+```
+
+Your browser opens Bob's login page with a `callback_uri` pointing at a local
+one-shot listener; the returned code is exchanged at
+`POST /authn/v1/auth/token`, and OpenCode stores the access/refresh pair in its
+own auth store (`~/.local/share/opencode/auth.json`). Expired tokens are
+refreshed at `POST /authn/v1/auth/refresh` and written back through OpenCode's
+auth API.
+
+Do **not** copy a token out of Bob's local credential store unless IBM policy
+explicitly permits it — use the SSO login.
+
+**Approved API key**
+
+```bash
+export IBM_BOB_API_KEY="..."   # IBM_BOB_KEY is also accepted; do not commit either
+```
+
+Or store it in the auth store instead of the environment with
+`opencode auth login` → **IBM Bob API key**.
+
+Credential resolution order: what OpenCode stored for the provider (SSO or API
+key), then `IBM_BOB_API_KEY`, then `IBM_BOB_KEY`. Run `opencode auth logout` for
+`ibm-bob` before switching from SSO back to an environment key.
+
+### 3. Use it
+
+```bash
+opencode models | grep ibm-bob
+opencode run -m ibm-bob/premium "say hi"
+```
+
+After an SSO login the discovered catalog only lands at the **next** OpenCode
+start (see [Model discovery](#model-discovery)); until then you get the fallback
+model, `premium`.
+
+## The complete configuration
+
+Everything the plugin understands, in one place. **Nothing below is required**:
+the values shown are the ones the plugin already uses by default, so
+[Setup in 3 steps](#setup-in-3-steps) is all you need to get running — come back
+here to change something.
+
+`opencode.example.json` in this package is a ready-to-copy starting point for the
+first block.
+
+### `opencode.json` — provider, models, overrides
+
+Anything you declare under `provider.ibm-bob` wins over what the plugin
+generates, so a corporate endpoint or a pinned model list stays in place. Both
+blocks below are optional — `plugin` alone is a complete config:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["opencode-ibm-bob"],
+  "provider": {
+    "ibm-bob": {
+      "options": {
+        "baseURL": "https://api.us-east.bob.ibm.com/inference/v1"
+      },
+      "models": {
+        "premium": { "limit": { "context": 150000, "output": 8192 } }
+      }
+    }
+  }
+}
+```
+
+### `.opencode/tui.json` — the sidebar widget
+
+```json
+{
+  "$schema": "https://opencode.ai/tui.json",
+  "plugin": ["opencode-ibm-bob"]
+}
+```
+
+### Environment — every variable with its default
+
+Copy what you need into your shell profile, `.env`, or your OpenCode config's
+environment. **Only `IBM_BOB_API_KEY` ever holds a secret — keep it out of repo
+files.** Each variable is described in the
+[reference below](#environment-variable-reference).
+
+```bash
+# --- Credential (pick one, or use `opencode auth login` instead) ------------
+export IBM_BOB_API_KEY=""                    # approved API key/token
+export IBM_BOB_KEY=""                        # alias, matching Bob Shell
+
+# --- Core -------------------------------------------------------------------
+export IBM_BOB_ENABLED=true                  # false leaves the provider unregistered
+export IBM_BOB_BASE_URL="https://api.us-east.bob.ibm.com/inference/v1"
+export IBM_BOB_MODELS="premium"              # fallback models when no catalog is available
+export IBM_BOB_DEBUG=false                   # log discovery, token and login steps
+
+# --- Model discovery --------------------------------------------------------
+export IBM_BOB_DISCOVER_MODELS=true
+export IBM_BOB_MODEL_DISCOVERY_TIMEOUT_MS=5000
+export IBM_BOB_CATALOG_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/opencode/ibm-bob/catalog.json"
+export IBM_BOB_CATALOG_TTL_MS=86400000       # 24h
+
+# --- Instance / team routing ------------------------------------------------
+export IBM_BOB_DISCOVER_PROFILE=true
+export IBM_BOB_PROFILE_DISCOVERY_TIMEOUT_MS=5000
+export IBM_BOB_PROFILE_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/opencode/ibm-bob/profile.json"
+export IBM_BOB_PROFILE_TTL_MS=86400000       # 24h
+export IBM_BOB_READ_BOBSHELL_SETTINGS=true   # ~/.bob/settings.json, Bob Shell 1.x only
+export IBM_BOB_INSTANCE_ID=""                # override x-instance-id
+export IBM_BOB_TEAM_ID=""                    # override x-team-id
+export IBM_BOB_USER_AGENT="opencode-ibm-bob/<version>"
+export IBM_BOB_HEADERS_JSON=""               # extra headers, e.g. '{"x-trace":"1"}'
+
+# --- Authentication ---------------------------------------------------------
+export IBM_BOB_AUTH_SCHEME="Apikey"          # non-JWT credentials; SSO always uses Bearer
+export IBM_BOB_AUTH_BASE_URL=""              # defaults to the origin of IBM_BOB_BASE_URL
+export IBM_BOB_WEB_LOGIN_URL="https://bob.ibm.com/login"
+export IBM_BOB_TOKEN_REQUEST_TIMEOUT_MS=10000
+export IBM_BOB_LOGIN_TIMEOUT_MS=180000       # how long the SSO callback listener waits
+export IBM_BOB_SSO_PORT=""                   # default: a random free port
+
+# --- Cost and budget --------------------------------------------------------
+export IBM_BOB_RATES=""                      # e.g. "premium=2:2,fast=0.8:0.84" (Bobcoins)
+export IBM_BOB_BUDGET_TIMEOUT_MS=5000
+export IBM_BOB_BUDGET_TTL_MS=300000          # 5min, budget cache used by the sidebar
+export IBM_BOB_BUDGET_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/opencode/ibm-bob/budget.json"
+
+# --- Adapter ----------------------------------------------------------------
+export IBM_BOB_API="openai-completions"      # or openai-responses / anthropic-messages
+export IBM_BOB_NPM=""                        # override the AI SDK package
+
+# --- Model metadata (only used when discovery cannot supply it) -------------
+export IBM_BOB_CONTEXT_WINDOW=200000
+export IBM_BOB_MAX_TOKENS=8192
+export IBM_BOB_INPUT="text"                  # or "text,image"
+export IBM_BOB_REASONING=false
+export IBM_BOB_REASONING_MODELS=""           # comma-separated model IDs
+```
+
+## Troubleshooting
+
+| Symptom | Cause and fix |
+| --- | --- |
+| `402 team user not found or has been deleted` | Bob rejects an SSO token with no `x-team-id`. The plugin normally resolves it from `/admin/v1/profile`; if that call cannot be reached, set `IBM_BOB_TEAM_ID` (and `IBM_BOB_INSTANCE_ID`) yourself. See [Instance and team routing](#instance-and-team-routing). |
+| `opencode models` shows only `ibm-bob/premium` | The catalog has not been discovered yet. After an SSO login it is applied at the **next** OpenCode start. With an API key it is fetched immediately — check `IBM_BOB_DEBUG=true` output. |
+| Models are stale after a plan change | Delete the catalog cache (`${XDG_CACHE_HOME:-~/.cache}/opencode/ibm-bob/catalog.json`) or lower `IBM_BOB_CATALOG_TTL_MS`. |
+| The sidebar widget never appears | It is loaded from `tui.json`, not `opencode.json`. See [step 1](#1-declare-the-plugin). |
+| The sidebar says "usage unavailable" | The budget cache has not been written yet (it is refreshed once per session start), or no team could be resolved for the credential. |
+| `401`/`403` from Bob with a valid key | Your endpoint may expect a different auth scheme; set `IBM_BOB_AUTH_SCHEME` (Bob's own is `Apikey`). |
+| Switching from SSO back to an env key does nothing | The stored credential wins. Run `opencode auth logout` for `ibm-bob` first. |
+| The cost column shows `$0.00` | The model is missing from the rate table; supply its rate with `IBM_BOB_RATES`. See [Pricing the models](#pricing-the-models). |
+
+`IBM_BOB_DEBUG=true` logs discovery, token and login steps and is the first
+thing to turn on for anything else.
 
 ## What it does
 
@@ -30,65 +250,6 @@ Shell's own scheme) and SSO tokens with `Authorization: Bearer <jwt>`, while the
 AI SDK adapters send `Bearer` or `x-api-key` for whatever credential they are
 given. The plugin therefore rewrites that header per request; use
 `IBM_BOB_AUTH_SCHEME` if your endpoint expects a different scheme.
-
-## Install
-
-From npm, in the OpenCode config (`opencode.json` in the project, or
-`~/.config/opencode/opencode.json` globally):
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-ibm-bob"]
-}
-```
-
-From a checkout, point the same entry at the repository directory:
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["/absolute/path/to/opencode-ibm-bob"]
-}
-```
-
-`opencode.example.json` in this package is a ready-to-copy configuration.
-
-## Quick start
-
-### Bob SSO
-
-```bash
-opencode auth login       # pick "IBM Bob", then "IBM Bob SSO (browser)"
-opencode models | grep ibm-bob
-opencode run -m ibm-bob/premium "say hi"
-```
-
-The browser opens Bob's login page with a `callback_uri` pointing at a local
-one-shot listener; the returned code is exchanged at
-`POST /authn/v1/auth/token`, and OpenCode stores the access/refresh pair in its
-own auth store (`~/.local/share/opencode/auth.json`). Expired tokens are
-refreshed at `POST /authn/v1/auth/refresh` and written back through OpenCode's
-auth API.
-
-Do **not** copy a token out of Bob's local credential store unless IBM policy
-explicitly permits it — use the SSO login.
-
-### Approved API key
-
-```bash
-export IBM_BOB_API_KEY="..."   # IBM_BOB_KEY is also accepted; do not commit either
-opencode models | grep ibm-bob
-opencode run -m ibm-bob/premium "say hi"
-```
-
-`opencode auth login` → **IBM Bob API key** stores the same credential in the
-auth store instead of the environment.
-
-Resolution order for the credential is: what OpenCode stored for the provider
-(SSO or API key), then `IBM_BOB_API_KEY`, then `IBM_BOB_KEY`. Run
-`opencode auth logout` for `ibm-bob` before switching from SSO back to an
-environment key.
 
 ## Model discovery
 
@@ -177,7 +338,7 @@ Amounts use Bob Shell's precision ladder, with one finer step: a single request
 can cost less than `0.0001` Bobcoin, which Bob Shell's last rung prints as a
 flat `0.0000`.
 
-### Sidebar Bobcoins widget
+## Sidebar Bobcoins widget
 
 OpenCode's TUI shows a "Context" widget in the session sidebar with the
 tokens used and the percentage of the context window they fill. This plugin
@@ -215,36 +376,10 @@ every 15 seconds. Until the first fetch lands, or if it fails (offline, no
 team resolved, member API key with no team), it shows "usage unavailable"
 rather than a stale or wrong figure.
 
-**TUI plugins are configured in a different file from server plugins.**
-`opencode.json`'s `plugin` array only feeds OpenCode's server process; the
-TUI reads its own `plugin` array from `tui.json` — `.opencode/tui.json` in
-the project, or `~/.config/opencode/tui.json` globally. Listing the plugin
-only in `opencode.json` loads the provider but silently never loads this
-widget.
-
-Both halves come from the same package root, so both files name the same
-entry (there is no `/tui` suffix — OpenCode resolves the TUI half from the
-package's own `exports["./tui"]`):
-
-`opencode.json` — the provider:
-
-```json
-{
-  "plugin": ["opencode-ibm-bob"]
-}
-```
-
-`.opencode/tui.json` — the sidebar widget:
-
-```json
-{
-  "$schema": "https://opencode.ai/tui.json",
-  "plugin": ["opencode-ibm-bob"]
-}
-```
-
-From a checkout, use the repository's absolute path in place of the package
-name in both files — no linking or installing needed.
+**TUI plugins are configured in a different file from server plugins** —
+`.opencode/tui.json`, not `opencode.json`. See
+[step 1](#1-declare-the-plugin) for both files; listing the plugin only in
+`opencode.json` loads the provider but silently never loads this widget.
 
 This half of the plugin only runs in the OpenCode TUI process — it has no
 effect on `opencode run`, `opencode serve`, or the provider/auth behavior
@@ -274,7 +409,11 @@ Bob Shell 1.x installations.
 The cache lives in `${XDG_CACHE_HOME:-~/.cache}/opencode/ibm-bob/profile.json`,
 is scoped to the origin that produced it, and holds no credentials.
 
-## Configuration
+## Environment variable reference
+
+Every variable is optional; see
+[the complete configuration](#the-complete-configuration) for a copy-paste block
+of the whole set.
 
 ### Core
 
@@ -297,6 +436,8 @@ is scoped to the origin that produced it, and holds no credentials.
 | `IBM_BOB_PROFILE_CACHE` | `${XDG_CACHE_HOME:-~/.cache}/opencode/ibm-bob/profile.json` | Profile cache file. |
 | `IBM_BOB_PROFILE_TTL_MS` | `86400000` | Age after which the cached profile is refetched. |
 | `IBM_BOB_BUDGET_TIMEOUT_MS` | `5000` | Timeout for the Bobcoin budget lookup. |
+| `IBM_BOB_BUDGET_TTL_MS` | `300000` | Age after which the cached team budget is refreshed at session start. |
+| `IBM_BOB_BUDGET_CACHE` | `${XDG_CACHE_HOME:-~/.cache}/opencode/ibm-bob/budget.json` | Budget cache file the sidebar widget reads. |
 | `IBM_BOB_RATES` | measured table | Override the Bobcoin rates, as `model=input:output` pairs. |
 | `IBM_BOB_DEBUG` | `false` | Log discovery, token and login steps. |
 
@@ -338,30 +479,11 @@ IBM-approved endpoints that expose those APIs.
 | `IBM_BOB_REASONING` | discovered; fallback `false` | Force reasoning support on or off. |
 | `IBM_BOB_REASONING_MODELS` | empty | Comma-separated model IDs to mark as reasoning-capable. |
 
-### Config overrides
-
-Anything declared under `provider.ibm-bob` in your OpenCode config wins over what
-the plugin generates, so a corporate endpoint or a pinned model list stays in
-place:
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-ibm-bob"],
-  "provider": {
-    "ibm-bob": {
-      "options": { "baseURL": "https://bob.internal.example/inference/v1" },
-      "models": { "premium": { "limit": { "context": 150000, "output": 8192 } } }
-    }
-  }
-}
-```
-
 ## Development
 
 ```bash
 bun install
-bun test        # 118 tests
+bun test        # 121 tests
 bun run typecheck
 ```
 
@@ -381,7 +503,7 @@ key:
 
 Also verified locally:
 
-- `bun test` — 118 tests covering catalog parsing (including the API-key payload
+- `bun test` — 121 tests covering catalog parsing (including the API-key payload
   shape, the `exposed` and `completion_only` filters), per-million price
   conversion, catalog cache round-trip and base-URL scoping, fallback and
   override model building, the `Apikey`/`Bearer` header rules, credential
