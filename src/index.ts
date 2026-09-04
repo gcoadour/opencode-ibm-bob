@@ -1,11 +1,14 @@
 import type { Hooks, PluginInput } from "@opencode-ai/plugin"
 import {
+  BobAuthError,
   BobTokenResolver,
+  RELOGIN_HINT,
   authSchemeFor,
   awaitAuthorizationCode,
   buildLoginUrl,
   createBobFetch,
   exchangeAuthorizationCode,
+  jwtHardExpiry,
   newState,
   readInstanceFromJwt,
   refreshCredentials,
@@ -61,7 +64,14 @@ export const IbmBobPlugin = async ({ client }: PluginInput): Promise<Hooks> => {
     auth: { set: (options: { path: { id: string }; body: StoredAuth }) => Promise<unknown> }
   }
 
-  let refreshing: Promise<string | undefined> | undefined
+  let refreshing: Promise<string> | undefined
+  /**
+   * The credentials this process last obtained. Bob rotates the refresh token
+   * on every renewal, so once the auth-store write fails the stored pair is
+   * spent; renewing from this copy keeps the session alive instead of replaying
+   * a consumed token and losing the login for good.
+   */
+  let session: BobCredentials | undefined
   let catalogRefreshed = false
   let budgetRefreshed = false
 
@@ -137,15 +147,30 @@ export const IbmBobPlugin = async ({ client }: PluginInput): Promise<Hooks> => {
     }
   }
 
-  async function refreshStored(info: Extract<StoredAuth, { type: "oauth" }>): Promise<string | undefined> {
+  /**
+   * `expires` is stored five minutes early (see `jwtExpiry`), so a token past it
+   * is usually still accepted. That window is what a failed refresh may fall
+   * back on; beyond it the token is dead, and sending it only turns a fixable
+   * login into an unexplained rejection from Bob.
+   */
+  function stillValid(access: string): boolean {
+    const hardExpiry = jwtHardExpiry(access)
+    return Boolean(access) && hardExpiry !== undefined && hardExpiry > Date.now()
+  }
+
+  async function refreshStored(credentials: BobCredentials): Promise<string> {
     refreshing ??= (async () => {
       try {
-        const next = await refreshCredentials(info.refresh)
+        const next = await refreshCredentials(credentials.refresh)
+        // Kept in memory first: a rotated refresh token that only reached the
+        // auth store is lost if that write fails.
+        session = next
         await persist(next)
         return next.access
       } catch (error) {
         log(`IBM Bob token refresh failed: ${errorMessage(error)}`, "warn")
-        return info.access || undefined
+        if (stillValid(credentials.access)) return credentials.access
+        throw new BobAuthError(`The IBM Bob SSO session has expired and could not be renewed. ${RELOGIN_HINT}`)
       } finally {
         refreshing = undefined
       }
@@ -160,7 +185,12 @@ export const IbmBobPlugin = async ({ client }: PluginInput): Promise<Hooks> => {
     if (info.type === "wellknown") return info.token
     if (info.type !== "oauth") return undefined
 
-    const token = info.expires > Date.now() ? info.access : await refreshStored(info)
+    // What this process refreshed wins over the auth store when it is newer:
+    // the store is only as current as the last write that succeeded.
+    const stored: BobCredentials = { access: info.access, refresh: info.refresh, expires: info.expires }
+    const current = session && session.expires > stored.expires ? session : stored
+
+    const token = current.expires > Date.now() ? current.access : await refreshStored(current)
     if (token) {
       refreshCatalogInBackground(token)
       refreshBudgetInBackground(token)
@@ -221,10 +251,16 @@ export const IbmBobPlugin = async ({ client }: PluginInput): Promise<Hooks> => {
               `over ${spend.count} billed response(s).`,
           ]
 
-          const token = await resolver.resolve()
+          // A credential the user has to renew is worth naming here, rather
+          // than reporting the session figure and calling the rest unavailable.
+          const credential = await resolver.resolve().then(
+            (token) => ({ token, failure: undefined }),
+            (error: unknown) => ({ token: undefined, failure: errorMessage(error) }),
+          )
+          const token = credential.token
           const profile = token ? await profiles.resolve(token, authSchemeFor(token)) : undefined
           if (!token || !profile) {
-            lines.push("Team usage is unavailable: no IBM Bob credential resolved.")
+            lines.push(`Team usage is unavailable: ${credential.failure ?? "no IBM Bob credential resolved."}`)
             return { title: "IBM Bob usage", output: lines.join("\n") }
           }
 
@@ -272,7 +308,12 @@ export const IbmBobPlugin = async ({ client }: PluginInput): Promise<Hooks> => {
         if (!info) return {}
 
         resolver.registerStored(() => storedToken(read))
-        const token = await storedToken(read)
+        // A dead session must not take the provider down with it: the models
+        // stay listed, and the first request reports what the user has to do.
+        const token = await storedToken(read).catch((error: unknown) => {
+          log(errorMessage(error), "warn")
+          return undefined
+        })
 
         return {
           baseURL: requestBaseUrl(api),

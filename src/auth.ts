@@ -13,6 +13,7 @@ import {
   configuredApiKey,
   envInt,
   errorMessage,
+  isPlaceholderCredential,
   log,
   routingHeaders,
   userAgent,
@@ -45,6 +46,20 @@ export interface CallbackServer {
 
 const EXPIRY_SKEW_MS = 5 * 60 * 1000
 
+/**
+ * A credential problem the user has to act on: no credential at all, or an SSO
+ * session Bob will not renew. It carries the remedy in its message, because
+ * what reaches the user otherwise is Bob's bare `401`.
+ */
+export class BobAuthError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "BobAuthError"
+  }
+}
+
+export const RELOGIN_HINT = "Run `opencode auth login`, pick IBM Bob, and log in again."
+
 export function jwtPayload(token: string): Record<string, unknown> | undefined {
   try {
     const parts = token.split(".")
@@ -62,6 +77,16 @@ export function jwtPayload(token: string): Record<string, unknown> | undefined {
 export function jwtExpiry(token: string): number | undefined {
   const exp = jwtPayload(token)?.exp
   return typeof exp === "number" ? exp * 1000 - EXPIRY_SKEW_MS : undefined
+}
+
+/**
+ * The moment the token itself stops being accepted, without the skew
+ * `jwtExpiry` subtracts. A token past `jwtExpiry` but before this is what the
+ * skew window is for, and is still worth sending.
+ */
+export function jwtHardExpiry(token: string): number | undefined {
+  const exp = jwtPayload(token)?.exp
+  return typeof exp === "number" ? exp * 1000 : undefined
 }
 
 export function readInstanceFromJwt(token: string | undefined): string | undefined {
@@ -82,35 +107,50 @@ export function authSchemeFor(token: string): string {
   return jwtPayload(token) ? "Bearer" : apiKeyAuthScheme()
 }
 
+function usableCredential(value: string | null | undefined): string | undefined {
+  const trimmed = typeof value === "string" ? value.trim() : ""
+  if (!trimmed || isPlaceholderCredential(trimmed)) return undefined
+  return trimmed
+}
+
+/** Whether the request carries an `Authorization` header, whatever its case. */
+export function hasAuthorization(headers: Record<string, string | null | undefined>): boolean {
+  return Object.entries(headers).some(([name, value]) => name.toLowerCase() === "authorization" && Boolean(value))
+}
+
 /**
  * Bob expects `Authorization: Apikey <key>` for approved API keys and
  * `Authorization: Bearer <jwt>` for SSO tokens. The AI SDK adapters send their
  * own `Authorization` or `x-api-key` header, so those are replaced here.
+ *
+ * The credential the adapters carry can also be the placeholder the provider
+ * was registered with rather than a real one; that is dropped instead of being
+ * sent, so an unauthenticated request fails as one instead of as a puzzling
+ * rejection from Bob.
  */
 export function applyBobAuthHeaders(
   headers: Record<string, string | null | undefined>,
   token?: string,
 ): Record<string, string | null | undefined> {
-  let resolved = token
+  let resolved = usableCredential(token)
   if (!resolved) {
     for (const [name, value] of Object.entries(headers)) {
       if (typeof value !== "string") continue
       const lower = name.toLowerCase()
       if (lower === "authorization") {
         const match = value.match(/^\s*(?:Bearer|Apikey)\s+(.+?)\s*$/iu)
-        if (match?.[1]) resolved = match[1]
-      } else if (lower === "x-api-key" && value.trim()) {
-        resolved ??= value.trim()
+        if (match?.[1]) resolved ??= usableCredential(match[1])
+      } else if (lower === "x-api-key") {
+        resolved ??= usableCredential(value)
       }
     }
   }
-  if (!resolved) return headers
 
   for (const name of Object.keys(headers)) {
     const lower = name.toLowerCase()
     if (lower === "authorization" || lower === "x-api-key") delete headers[name]
   }
-  headers.Authorization = `${authSchemeFor(resolved)} ${resolved}`
+  if (resolved) headers.Authorization = `${authSchemeFor(resolved)} ${resolved}`
   return headers
 }
 
@@ -133,7 +173,13 @@ export class BobTokenResolver {
         const token = await this.stored()
         if (token) return token
       } catch (error) {
-        log(`stored credentials unavailable: ${errorMessage(error)}`, "warn")
+        // An expired SSO session is only recoverable by the user, so it is
+        // reported rather than swallowed — unless an API key is configured,
+        // which is a credential this can fall back to on its own.
+        const fallback = configuredApiKey()
+        if (!fallback) throw error
+        log(`stored credentials unavailable, using ${fallback.envName}: ${errorMessage(error)}`, "warn")
+        return fallback.value
       }
     }
     return configuredApiKey()?.value
@@ -167,9 +213,18 @@ export function createBobFetch(
     const discovered = token ? await profiles?.resolve(token, authSchemeFor(token)) : undefined
     const headers: Record<string, string | null | undefined> = {
       ...routingHeaders(undefined, discovered),
+      // `headers` replaces whatever the input Request carried, so its own
+      // headers are folded in first rather than dropped.
+      ...headersToRecord(input instanceof Request ? input.headers : undefined),
       ...headersToRecord(init?.headers),
     }
     applyBobAuthHeaders(headers, token)
+    if (!hasAuthorization(headers)) {
+      throw new BobAuthError(
+        "No IBM Bob credential is available. " +
+          `${RELOGIN_HINT} Or set IBM_BOB_API_KEY to an IBM-approved Bob API key.`,
+      )
+    }
     if (!headers["x-instance-id"]) {
       const instance = readInstanceFromJwt(token)
       if (instance) headers["x-instance-id"] = instance
@@ -233,7 +288,9 @@ export function exchangeAuthorizationCode(code: string): Promise<BobCredentials>
 }
 
 export function refreshCredentials(refresh: string): Promise<BobCredentials> {
-  if (!refresh) throw new Error("No IBM Bob refresh token is available. Log in to IBM Bob again.")
+  // Bob's SSO response does not always carry a refresh token, and without one
+  // the session simply ends when the access token does.
+  if (!refresh) throw new BobAuthError(`No IBM Bob refresh token is available. ${RELOGIN_HINT}`)
   return postToken("/authn/v1/auth/refresh", { refresh_token: refresh })
 }
 

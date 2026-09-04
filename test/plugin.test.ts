@@ -180,16 +180,66 @@ describe("auth hook", () => {
     ])
   })
 
-  test("keeps working with the stale token when the refresh call fails", async () => {
+  test("keeps working inside the expiry skew when the refresh call fails", async () => {
+    // `expires` is stored five minutes early, so a token just past it is still
+    // accepted by Bob and worth sending while the renewal is failing.
+    const skewed = jwt({ exp: Math.floor(Date.now() / 1000) + 120 })
     globalThis.fetch = (async () => new Response("nope", { status: 401 })) as unknown as typeof fetch
     const hooks = await IbmBobPlugin(pluginInput())
 
     const options = await hooks.auth!.loader!(
-      async () => ({ type: "oauth", access: "stale", refresh: "r1", expires: Date.now() - 1000 }) as never,
+      async () => ({ type: "oauth", access: skewed, refresh: "r1", expires: Date.now() - 1000 }) as never,
       {} as never,
     )
 
-    expect(options.apiKey).toBe("stale")
+    expect(options.apiKey).toBe(skewed)
     expect(stored).toEqual([])
+  })
+
+  test("reports an expired session instead of replaying a dead token", async () => {
+    // Sending it anyway is what turns "your login expired" into an opaque
+    // authentication error from Bob on every later request.
+    const dead = jwt({ exp: Math.floor(Date.now() / 1000) - 3600 })
+    globalThis.fetch = (async () => new Response("nope", { status: 401 })) as unknown as typeof fetch
+    const hooks = await IbmBobPlugin(pluginInput())
+    const getAuth = async () => ({ type: "oauth", access: dead, refresh: "r1", expires: Date.now() - 1000 }) as never
+
+    // The provider still loads: the models stay listed, with the placeholder in
+    // place of a credential.
+    const options = await hooks.auth!.loader!(getAuth, {} as never)
+    expect(options.apiKey).toBe("ibm-bob")
+
+    // And the request that needed the credential says what to do about it.
+    await expect(
+      (options.fetch as (input: string) => Promise<Response>)(
+        "https://api.us-east.bob.ibm.com/inference/v1/chat/completions",
+      ),
+    ).rejects.toThrow(/SSO session has expired.*opencode auth login/su)
+  })
+
+  test("renews from the token it refreshed when the auth store write failed", async () => {
+    // Bob rotates the refresh token, so the pair left on disk is already spent:
+    // replaying it is what ends the session for good.
+    process.env.IBM_BOB_DISCOVER_MODELS = "false"
+    process.env.IBM_BOB_DISCOVER_PROFILE = "false"
+    const input = pluginInput() as unknown as { client: { auth: { set: () => Promise<unknown> } } }
+    input.client.auth.set = async () => {
+      throw new Error("auth store unavailable")
+    }
+    const hooks = await IbmBobPlugin(input as never)
+
+    const refreshTokens: string[] = []
+    const issue = () => jwt({ exp: Math.floor(Date.now() / 1000) + 3600 })
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      refreshTokens.push(JSON.parse(String(init?.body)).refresh_token)
+      return new Response(JSON.stringify({ token: issue(), refresh_token: `r${refreshTokens.length + 1}` }))
+    }) as unknown as typeof fetch
+
+    // The store keeps answering with the pair from before the first renewal.
+    const stale = async () => ({ type: "oauth", access: "expired", refresh: "r1", expires: Date.now() - 1000 }) as never
+    await hooks.auth!.loader!(stale, {} as never)
+    await hooks.auth!.loader!(stale, {} as never)
+
+    expect(refreshTokens).toEqual(["r1"])
   })
 })

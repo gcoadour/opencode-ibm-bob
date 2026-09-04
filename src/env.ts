@@ -166,6 +166,20 @@ export function apiKeyAuthScheme(): string {
   return env("IBM_BOB_AUTH_SCHEME") ?? "Apikey"
 }
 
+/**
+ * Values that look like a credential but are not one.
+ *
+ * The provider is registered with a placeholder `apiKey` so the AI SDK adapters
+ * build without a credential (they refuse an empty one), and the real token is
+ * attached per request. Sending a placeholder to Bob only earns an opaque
+ * authentication error, so it is stripped instead.
+ */
+const PLACEHOLDER_CREDENTIALS = new Set([PROVIDER_ID, "opencode-oauth-dummy-key"])
+
+export function isPlaceholderCredential(value: string): boolean {
+  return PLACEHOLDER_CREDENTIALS.has(value.trim())
+}
+
 export function userAgent(): string {
   return env("IBM_BOB_USER_AGENT") ?? `opencode-ibm-bob/${PLUGIN_VERSION}`
 }

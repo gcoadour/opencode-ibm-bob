@@ -83,7 +83,9 @@ one-shot listener; the returned code is exchanged at
 `POST /authn/v1/auth/token`, and OpenCode stores the access/refresh pair in its
 own auth store (`~/.local/share/opencode/auth.json`). Expired tokens are
 refreshed at `POST /authn/v1/auth/refresh` and written back through OpenCode's
-auth API.
+auth API. When Bob refuses to renew the session — the refresh token expired or
+was revoked — the plugin says so and asks you to log in again, rather than
+retrying a dead token and leaving you with a bare authentication error.
 
 Do **not** copy a token out of Bob's local credential store unless IBM policy
 explicitly permits it — use the SSO login.
@@ -225,6 +227,8 @@ export IBM_BOB_REASONING_MODELS=""           # comma-separated model IDs
 | The sidebar widget never appears | It is loaded from `tui.json`, not `opencode.json`. See [step 1](#1-declare-the-plugin). |
 | The sidebar says "usage unavailable" | The budget cache has not been written yet (it is refreshed once per session start), or no team could be resolved for the credential. |
 | `401`/`403` from Bob with a valid key | Your endpoint may expect a different auth scheme; set `IBM_BOB_AUTH_SCHEME` (Bob's own is `Apikey`). |
+| `The IBM Bob SSO session has expired and could not be renewed` | Bob refused the refresh token — it expired, was revoked, or the login never returned one. Log in again: `opencode auth login` → **IBM Bob** → **IBM Bob SSO (browser)**. |
+| `No IBM Bob credential is available` | Nothing was resolved: no SSO login, no stored API key, and neither `IBM_BOB_API_KEY` nor `IBM_BOB_KEY` set. See [step 2](#2-log-in). The plugin fails the request rather than sending its placeholder credential, which Bob would reject as an unexplained authentication error. |
 | Switching from SSO back to an env key does nothing | The stored credential wins. Run `opencode auth logout` for `ibm-bob` first. |
 | The cost column shows `$0.00` | The model is missing from the rate table; supply its rate with `IBM_BOB_RATES`. See [Pricing the models](#pricing-the-models). |
 
@@ -483,7 +487,7 @@ IBM-approved endpoints that expose those APIs.
 
 ```bash
 bun install
-bun test        # 121 tests
+bun test        # 128 tests
 bun run typecheck
 ```
 
@@ -503,11 +507,13 @@ key:
 
 Also verified locally:
 
-- `bun test` — 121 tests covering catalog parsing (including the API-key payload
+- `bun test` — 128 tests covering catalog parsing (including the API-key payload
   shape, the `exposed` and `completion_only` filters), per-million price
   conversion, catalog cache round-trip and base-URL scoping, fallback and
   override model building, the `Apikey`/`Bearer` header rules, credential
-  resolution order, SSO expiry/refresh/persistence, profile parsing and
+  resolution order, SSO expiry/refresh/persistence (including the expiry-skew
+  fallback, the dead-session error and renewal from the in-process pair when the
+  auth store cannot be written), profile parsing and
   selection, profile cache round-trip and origin scoping, the routing-header
   precedence, Bobcoin parsing from both JSON and streamed responses, the
   Bobcoin and dollar formatting ladders, the budget lookup, the rate table with

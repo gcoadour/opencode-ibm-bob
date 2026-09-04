@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import {
+  BobAuthError,
   BobTokenResolver,
   applyBobAuthHeaders,
   buildLoginUrl,
@@ -42,6 +43,14 @@ describe("applyBobAuthHeaders", () => {
   test("reuses an existing credential when no token is resolved", () => {
     expect(applyBobAuthHeaders({ "x-api-key": "from-sdk" })).toEqual({ Authorization: "Apikey from-sdk" })
     expect(applyBobAuthHeaders({})).toEqual({})
+  })
+
+  test("drops the provider placeholder rather than sending it as a credential", () => {
+    // What the provider is registered with when no credential is configured;
+    // Bob would answer a bare `401` for it.
+    expect(applyBobAuthHeaders({ Authorization: "Bearer ibm-bob" })).toEqual({})
+    expect(applyBobAuthHeaders({ "x-api-key": "opencode-oauth-dummy-key" })).toEqual({})
+    expect(applyBobAuthHeaders({ Authorization: "Bearer ibm-bob" }, "ibm-bob")).toEqual({})
   })
 })
 
@@ -191,6 +200,7 @@ describe("createBobFetch", () => {
   })
 
   test("keeps the request body and method untouched", async () => {
+    process.env.IBM_BOB_API_KEY = "bob-key"
     let init: RequestInit | undefined
     globalThis.fetch = (async (_input: RequestInfo | URL, options?: RequestInit) => {
       init = options
@@ -204,6 +214,71 @@ describe("createBobFetch", () => {
 
     expect(init?.method).toBe("POST")
     expect(init?.body).toBe('{"model":"premium"}')
+  })
+
+  test("keeps the headers of a Request the SDK passes as the input", async () => {
+    process.env.IBM_BOB_API_KEY = "bob-key"
+    let seen: Record<string, string> = {}
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      seen = init?.headers as Record<string, string>
+      return new Response("{}")
+    }) as unknown as typeof fetch
+
+    await createBobFetch(new BobTokenResolver())(
+      new Request("https://bob.example/inference/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "anthropic-beta": "prompt-caching" },
+        body: "{}",
+      }),
+    )
+
+    expect(seen["content-type"]).toBe("application/json")
+    expect(seen["anthropic-beta"]).toBe("prompt-caching")
+    expect(seen.Authorization).toBe("Apikey bob-key")
+  })
+
+  test("refuses to send a request no credential could be resolved for", async () => {
+    // Reaching Bob with the placeholder only earns a bare `401`, which reads as
+    // a broken plugin rather than as "you are not logged in".
+    globalThis.fetch = (async () => {
+      throw new Error("the request should never leave")
+    }) as unknown as typeof fetch
+
+    const request = createBobFetch(new BobTokenResolver())
+    const failure = request("https://bob.example/inference/v1/chat/completions", {
+      headers: { Authorization: "Bearer ibm-bob" },
+    })
+
+    await expect(failure).rejects.toThrow(BobAuthError)
+    await expect(failure).rejects.toThrow(/No IBM Bob credential is available.*opencode auth login/su)
+  })
+
+  test("reports an expired SSO session instead of falling back to the API key that is not set", async () => {
+    const resolver = new BobTokenResolver()
+    resolver.registerStored(async () => {
+      throw new BobAuthError("The IBM Bob SSO session has expired and could not be renewed.")
+    })
+
+    await expect(createBobFetch(resolver)("https://bob.example/inference/v1/chat/completions")).rejects.toThrow(
+      /SSO session has expired/u,
+    )
+  })
+
+  test("falls back to the configured API key when the stored credential is unusable", async () => {
+    process.env.IBM_BOB_API_KEY = "bob-key"
+    const resolver = new BobTokenResolver()
+    resolver.registerStored(async () => {
+      throw new BobAuthError("The IBM Bob SSO session has expired and could not be renewed.")
+    })
+
+    let seen: Record<string, string> = {}
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      seen = init?.headers as Record<string, string>
+      return new Response("{}")
+    }) as unknown as typeof fetch
+
+    await createBobFetch(resolver)("https://bob.example/inference/v1/chat/completions")
+    expect(seen.Authorization).toBe("Apikey bob-key")
   })
 })
 
