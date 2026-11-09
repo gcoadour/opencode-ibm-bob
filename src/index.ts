@@ -14,7 +14,7 @@ import {
   type StoredAuth,
 } from "./auth.ts"
 import { fetchBobModelCatalog, readCachedCatalog, writeCachedCatalog, type BobDiscoveredModel } from "./catalog.ts"
-import { BobSpend, fetchBobBudget, formatBobcoins, formatDollars, readCachedBudget, writeCachedBudget } from "./cost.ts"
+import { BobSpend, fetchBobBudget, readCachedBudget, writeCachedBudget } from "./cost.ts"
 import { BobProfileResolver, type BobProfile } from "./profile.ts"
 import {
   DEFAULT_BUDGET_TTL_MS,
@@ -33,9 +33,11 @@ import {
   routingHeaders,
 } from "./env.ts"
 import { buildModels } from "./models.ts"
+import { bobUsageReport } from "./usage.ts"
+import { setup as setupV2 } from "./v2.ts"
 
 /**
- * OpenCode plugin that exposes IBM Bob (and IBM-approved Bob-compatible
+ * OpenCode V1 (`@opencode-ai/plugin`) plugin that exposes IBM Bob (and IBM-approved Bob-compatible
  * endpoints) as the `ibm-bob` provider.
  *
  * - `config` registers the provider with its model catalog, so the models show
@@ -214,52 +216,7 @@ export const IbmBobPlugin = async ({ client }: PluginInput): Promise<Hooks> => {
           "Report IBM Bob usage in Bobcoins: what this OpenCode session spent, and the team's total usage against its budget.",
         args: {},
         async execute() {
-          // The turn that calls this tool has not been billed yet, so its own
-          // cost only appears on the next call.
-          const lines = [
-            `This session so far: ${formatBobcoins(spend.total)} Bobcoins (${formatDollars(spend.total)}) ` +
-              `over ${spend.count} billed response(s).`,
-          ]
-
-          const token = await resolver.resolve()
-          const profile = token ? await profiles.resolve(token, authSchemeFor(token)) : undefined
-          if (!token || !profile) {
-            lines.push("Team usage is unavailable: no IBM Bob credential resolved.")
-            return { title: "IBM Bob usage", output: lines.join("\n") }
-          }
-
-          const team = profile.teamName ?? profile.teamId ?? "unknown"
-          // The profile already carries a usage figure; the budget endpoint has
-          // the fresher per-member one, so it is preferred when reachable.
-          let usage = profile.usage
-          let limit = profile.budgetLimit
-          if (profile.teamId && profile.instanceUserId) {
-            try {
-              const budget = await fetchBobBudget(token, authSchemeFor(token), {
-                ...profile,
-                teamId: profile.teamId,
-                instanceUserId: profile.instanceUserId,
-              })
-              usage = budget.usage
-              limit = budget.budgetLimit ?? limit
-              writeCachedBudget(team, budget)
-            } catch (error) {
-              log(`budget lookup failed, using the profile figure: ${errorMessage(error)}`, "warn")
-            }
-          }
-
-          if (usage === undefined) {
-            lines.push(`Team ${team}: IBM Bob did not report a usage figure.`)
-          } else if (limit === undefined) {
-            lines.push(`Team ${team}: ${formatBobcoins(usage)} Bobcoins used (no published limit).`)
-          } else {
-            lines.push(
-              `Team ${team}: ${formatBobcoins(usage)}/${formatBobcoins(limit)} BOBcoin used ` +
-                `(${formatDollars(usage)} of ${formatDollars(limit)}), ` +
-                `${formatBobcoins(Math.max(0, limit - usage))} left.`,
-            )
-          }
-          return { title: "IBM Bob usage", output: lines.join("\n") }
+          return { title: "IBM Bob usage", output: await bobUsageReport(resolver, profiles, spend) }
         },
       },
     },
@@ -315,4 +272,15 @@ export const IbmBobPlugin = async ({ client }: PluginInput): Promise<Hooks> => {
       ],
     },
   }
+}
+
+/**
+ * One module serves both plugin APIs. OpenCode V1 reads `server` from the
+ * default export (and resolves `./server` before `main`); OpenCode V2 reads
+ * `id` + `setup` and ignores the rest. See `v2.ts` for the V2 side.
+ */
+export default {
+  id: "opencode-ibm-bob",
+  server: IbmBobPlugin,
+  setup: setupV2,
 }

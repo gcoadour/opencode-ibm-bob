@@ -15,6 +15,7 @@ adds Bob's browser SSO to `opencode auth login`.
 
 **Contents**
 
+- [OpenCode V1 and V2](#opencode-v1-and-v2) — which versions are supported
 - [Setup in 3 steps](#setup-in-3-steps) — the fastest path
 - [The complete configuration](#the-complete-configuration) — every file and
   every variable, in one place
@@ -26,6 +27,46 @@ adds Bob's browser SSO to `opencode auth login`.
 - [Instance and team routing](#instance-and-team-routing)
 - [Environment variable reference](#environment-variable-reference)
 - [Development](#development) · [Validation performed](#validation-performed)
+
+## OpenCode V1 and V2
+
+The same package works with both plugin APIs:
+
+| | OpenCode **V1** (`opencode-ai` 1.4+, `@opencode-ai/plugin`) | OpenCode **V2** (`@opencode/cli` 2.2+, `@opencode/plugin`) |
+| --- | --- | --- |
+| Config key | `plugin` in `opencode.json` | `plugins` in `opencode.json` (the V1 `plugin` key is still read) |
+| Sidebar widget | also list the plugin in `tui.json` | loaded automatically from the same entry |
+| Server entry | `default.server` (the V1 `config`/`auth`/`tool` hooks) | `default.setup` ([`src/v2.ts`](src/v2.ts)) |
+| Login | `opencode auth login` | `opencode auth` |
+
+Both entry points live in one module: V1 reads `server` from the default
+export, V2 reads `id` + `setup` and ignores the rest. The TUI module does the
+same with `tui` and `setup`. The V2 side imports nothing from
+`@opencode/plugin` at runtime (types only), so V1 still loads it.
+
+What changed under V2, since its plugin API is a rewrite:
+
+- **Provider and models** go through `ctx.provider.transform` instead of the
+  `config` hook, as `Model.Info` records, with OpenCode's native
+  `@opencode/ai/providers/openai-compatible` package (or `…/openai`,
+  `…/anthropic` per `IBM_BOB_API`). The transform fills in only what an
+  `opencode.json` entry for `ibm-bob` left unset.
+- **Login** goes through `ctx.integration.transform`: the SSO method, a
+  stored-key method and the `IBM_BOB_API_KEY` / `IBM_BOB_KEY` env method.
+  OpenCode itself now stores the credential and calls the plugin's `refresh`
+  before it expires, so the plugin no longer writes the auth store.
+- **Per-request auth and routing** use the `session` `http.request` hook
+  (rewriting `Bearer`/`x-api-key` to Bob's `Apikey` scheme, adding
+  `x-instance-id`/`x-team-id`), and **Bobcoin accounting** the `http.response`
+  hook, instead of a custom `fetch`.
+- **`bob_usage`** is registered with `ctx.tool.transform`.
+- **The discovered catalog applies immediately**: V2 can re-run the provider
+  transform (`ctx.provider.reload()`), so a catalog fetched with the stored SSO
+  login no longer waits for the next start.
+- **The sidebar** only appends the Bobcoin line: V2's own Context section
+  already shows tokens and cost, so it is no longer replaced.
+- The provider only appears once a credential exists (a stored login or one of
+  the env variables), as for every V2 integration.
 
 ## Setup in 3 steps
 
@@ -61,6 +102,16 @@ no `/tui` suffix: OpenCode resolves the TUI half from the package's own
 }
 ```
 
+On **OpenCode V2**, `opencode.json` alone is enough — the sidebar widget loads
+from the same entry, and there is no `tui.json` to edit:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["opencode-ibm-bob"]
+}
+```
+
 Working from a checkout instead of npm? Put the repository's absolute path in
 place of the package name, in both files — no linking or installing needed:
 
@@ -70,7 +121,8 @@ place of the package name, in both files — no linking or installing needed:
 
 ### 2. Log in
 
-Pick **one** of the two credentials. SSO is the recommended path.
+Pick **one** of the two credentials. SSO is the recommended path. On OpenCode
+V2 the command is `opencode auth` (pick **IBM Bob**); the methods are the same.
 
 **Bob SSO (browser)**
 
@@ -222,7 +274,9 @@ export IBM_BOB_REASONING_MODELS=""           # comma-separated model IDs
 | `402 team user not found or has been deleted` | Bob rejects an SSO token with no `x-team-id`. The plugin normally resolves it from `/admin/v1/profile`; if that call cannot be reached, set `IBM_BOB_TEAM_ID` (and `IBM_BOB_INSTANCE_ID`) yourself. See [Instance and team routing](#instance-and-team-routing). |
 | `opencode models` shows only `ibm-bob/premium` | The catalog has not been discovered yet. After an SSO login it is applied at the **next** OpenCode start. With an API key it is fetched immediately — check `IBM_BOB_DEBUG=true` output. |
 | Models are stale after a plan change | Delete the catalog cache (`${XDG_CACHE_HOME:-~/.cache}/opencode/ibm-bob/catalog.json`) or lower `IBM_BOB_CATALOG_TTL_MS`. |
-| The sidebar widget never appears | It is loaded from `tui.json`, not `opencode.json`. See [step 1](#1-declare-the-plugin). |
+| The sidebar widget never appears | On V1 it is loaded from `tui.json`, not `opencode.json`. See [step 1](#1-declare-the-plugin). |
+| V2: `ibm-bob` is missing from `opencode models` | V2 hides an integration's provider until it has a credential: log in with `opencode auth`, or set `IBM_BOB_API_KEY`. |
+| V2: `Plugin must export a default definition` | An older copy of this plugin (≤ 0.5.0) is installed; it only had the V1 entry. Update the package. |
 | The sidebar says "usage unavailable" | The budget cache has not been written yet (it is refreshed once per session start), or no team could be resolved for the credential. |
 | `401`/`403` from Bob with a valid key | Your endpoint may expect a different auth scheme; set `IBM_BOB_AUTH_SCHEME` (Bob's own is `Apikey`). |
 | Switching from SSO back to an env key does nothing | The stored credential wins. Run `opencode auth logout` for `ibm-bob` first. |
@@ -232,6 +286,10 @@ export IBM_BOB_REASONING_MODELS=""           # comma-separated model IDs
 thing to turn on for anything else.
 
 ## What it does
+
+On OpenCode V2 the same behaviour comes from `ctx.provider.transform`,
+`ctx.integration.transform`, the `session` `http.request`/`http.response` hooks
+and `ctx.tool.transform` — see [OpenCode V1 and V2](#opencode-v1-and-v2). On V1:
 
 | Hook | Effect |
 | --- | --- |
@@ -483,11 +541,30 @@ IBM-approved endpoints that expose those APIs.
 
 ```bash
 bun install
-bun test        # 121 tests
+bun test        # 134 tests
 bun run typecheck
 ```
 
 ## Validation performed
+
+Against **OpenCode V2** (`@opencode/cli` 2.2.6), with the plugin listed in
+`plugins` by absolute path:
+
+- `opencode models` lists `ibm-bob/premium` once `IBM_BOB_API_KEY` is set.
+- `opencode run -m ibm-bob/premium "say hi"` against a local stub of the Bob
+  API answered from the stub, which received
+  `POST /inference/v1/chat/completions` with `Authorization: Apikey <key>`,
+  `x-team-id` and the plugin's User-Agent.
+- `test/v2.test.ts` covers the V2 entry with a fake plugin context: the
+  provider and model records, merging with an `opencode.json` entry, the
+  integration methods, SSO refresh, the header rewrite, the Bobcoin accounting
+  and `bob_usage`.
+- Not verified on V2: the browser SSO round-trip and the TUI sidebar line,
+  which need an interactive terminal and a live Bob account.
+
+The rest of this section is the original validation, done on OpenCode V1. The
+V1 entry still loads on OpenCode 1.19.5 (`opencode models` lists
+`ibm-bob/premium`).
 
 Against the live `https://api.us-east.bob.ibm.com` endpoint with an approved API
 key:
