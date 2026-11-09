@@ -2,7 +2,7 @@
   "name": "opencode-ibm-bob",
   "version": "0.5.0",
   "type": "module",
-  "description": "OpenCode plugin that registers IBM Bob / IBM-approved enterprise model endpoints as an OpenCode provider.",
+  "description": "OpenCode plugin (V1 and V2) that registers IBM Bob / IBM-approved enterprise model endpoints as an OpenCode provider.",
   "keywords": [
     "opencode",
     "opencode-plugin",
@@ -36,21 +36,27 @@
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
-    "@opencode-ai/plugin": ">=1.0.0",
+    "@opencode-ai/plugin": ">=1.4.0",
+    "@opencode/plugin": ">=2.2.0",
     "@opentui/core": ">=0.4.5",
     "@opentui/solid": ">=0.4.5",
     "solid-js": ">=1.9.0"
   },
   "peerDependenciesMeta": {
+    "@opencode-ai/plugin": { "optional": true },
+    "@opencode/plugin": { "optional": true },
     "@opentui/core": { "optional": true },
     "@opentui/solid": { "optional": true },
     "solid-js": { "optional": true }
   },
   "devDependencies": {
     "@opencode-ai/plugin": "^1.18.23",
+    "@opencode/plugin": "2.2.6",
+    "@opencode/theme": "2.2.6",
     "@opentui/core": "^0.4.5",
     "@opentui/solid": "^0.4.5",
     "@types/bun": "^1.2.0",
+    "effect": "4.1.0",
     "solid-js": "^1.9.12",
     "typescript": "^5.9.2"
   }
