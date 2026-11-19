@@ -1,5 +1,7 @@
 import type { Message } from "@opencode-ai/sdk/v2"
 import type { TuiPluginApi, TuiPluginModule, TuiSlotContext } from "@opencode-ai/plugin/tui"
+// Type-only: OpenCode V1 loads this module too, and has no `@opencode/plugin`.
+import type { Plugin as TuiV2 } from "@opencode/plugin/tui"
 import { createSignal, onCleanup } from "solid-js"
 import { formatBobcoins, readCachedBudget, type CachedBudget } from "./cost.ts"
 
@@ -38,6 +40,14 @@ function useCachedBudget() {
   return budget
 }
 
+function planLine(cached: CachedBudget | undefined): string {
+  if (!cached) return "usage unavailable"
+  const { usage, budgetLimit } = cached.budget
+  if (budgetLimit === undefined) return `${formatBobcoins(usage)} Bobcoins used`
+  return `${formatBobcoins(usage)} / ${formatBobcoins(budgetLimit)} Bobcoins`
+}
+
+/** OpenCode V1: replaces the built-in Context section, adding the Bobcoin line under it. */
 function SidebarBobcoins(props: { api: TuiPluginApi; session_id: string }) {
   const theme = () => props.api.theme.current
   const messages = () => props.api.state.session.messages(props.session_id)
@@ -52,14 +62,6 @@ function SidebarBobcoins(props: { api: TuiPluginApi; session_id: string }) {
     return { tokens, percent: model?.limit.context ? Math.round((tokens / model.limit.context) * 100) : null }
   }
 
-  const planLine = () => {
-    const cached = budget()
-    if (!cached) return "usage unavailable"
-    const { usage, budgetLimit } = cached.budget
-    if (budgetLimit === undefined) return `${formatBobcoins(usage)} Bobcoins used`
-    return `${formatBobcoins(usage)} / ${formatBobcoins(budgetLimit)} Bobcoins`
-  }
-
   return (
     <box>
       <text>
@@ -69,7 +71,7 @@ function SidebarBobcoins(props: { api: TuiPluginApi; session_id: string }) {
       </text>
       <text>
         <b style={{ fg: theme().text }}>{BOBCOIN_ICON}</b>
-        <span style={{ fg: theme().textMuted }}> {planLine()}</span>
+        <span style={{ fg: theme().textMuted }}> {planLine(budget())}</span>
       </text>
     </box>
   )
@@ -93,4 +95,36 @@ const tui = async (api: TuiPluginApi) => {
   })
 }
 
-export default { id: "ibm-bob-sidebar", tui } satisfies TuiPluginModule
+/**
+ * OpenCode V2: its built-in Context section already shows tokens and cost, so
+ * only the Bobcoin line is appended to the sidebar.
+ */
+function SidebarBobcoinsV2(props: { context: TuiV2.Context }) {
+  const theme = props.context.theme
+  const budget = useCachedBudget()
+  return (
+    <box>
+      <text fg={theme.text.base}>
+        <b>{BOBCOIN_ICON} Bobcoins</b>
+      </text>
+      <text fg={theme.text.muted}>{planLine(budget())}</text>
+    </box>
+  )
+}
+
+function setup(context: TuiV2.Context): TuiV2.Cleanup {
+  return context.ui.slot({
+    append: "sidebar.content",
+    render: () => <SidebarBobcoinsV2 context={context} />,
+  })
+}
+
+/**
+ * One module serves both TUI plugin APIs: OpenCode V1 calls `tui`, OpenCode
+ * V2 calls `setup`, and each ignores the other's key.
+ */
+export default {
+  id: "ibm-bob-sidebar",
+  tui,
+  setup,
+} satisfies TuiPluginModule & TuiV2.Definition

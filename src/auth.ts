@@ -82,6 +82,22 @@ export function authSchemeFor(token: string): string {
   return jwtPayload(token) ? "Bearer" : apiKeyAuthScheme()
 }
 
+/** The credential an AI SDK adapter put on a request, from `Authorization` or `x-api-key`. */
+export function tokenFromHeaders(headers: Record<string, string | null | undefined>): string | undefined {
+  let resolved: string | undefined
+  for (const [name, value] of Object.entries(headers)) {
+    if (typeof value !== "string") continue
+    const lower = name.toLowerCase()
+    if (lower === "authorization") {
+      const match = value.match(/^\s*(?:Bearer|Apikey)\s+(.+?)\s*$/iu)
+      if (match?.[1]) resolved = match[1]
+    } else if (lower === "x-api-key" && value.trim()) {
+      resolved ??= value.trim()
+    }
+  }
+  return resolved
+}
+
 /**
  * Bob expects `Authorization: Apikey <key>` for approved API keys and
  * `Authorization: Bearer <jwt>` for SSO tokens. The AI SDK adapters send their
@@ -91,19 +107,7 @@ export function applyBobAuthHeaders(
   headers: Record<string, string | null | undefined>,
   token?: string,
 ): Record<string, string | null | undefined> {
-  let resolved = token
-  if (!resolved) {
-    for (const [name, value] of Object.entries(headers)) {
-      if (typeof value !== "string") continue
-      const lower = name.toLowerCase()
-      if (lower === "authorization") {
-        const match = value.match(/^\s*(?:Bearer|Apikey)\s+(.+?)\s*$/iu)
-        if (match?.[1]) resolved = match[1]
-      } else if (lower === "x-api-key" && value.trim()) {
-        resolved ??= value.trim()
-      }
-    }
-  }
+  const resolved = token || tokenFromHeaders(headers)
   if (!resolved) return headers
 
   for (const name of Object.keys(headers)) {
@@ -112,6 +116,47 @@ export function applyBobAuthHeaders(
   }
   headers.Authorization = `${authSchemeFor(resolved)} ${resolved}`
   return headers
+}
+
+/**
+ * The headers Bob needs on an inference request: the caller's own headers,
+ * Bob's auth scheme for `token` (or for the credential already on the
+ * request), and the instance/team routing pair. Bob rejects inference with
+ * `402 team user not found` when an SSO token carries no team, and the team is
+ * only discoverable from `/admin/v1/profile`, so it is looked up here.
+ */
+export async function bobRequestHeaders(
+  incoming: Record<string, string | null | undefined>,
+  token: string | undefined,
+  profiles?: BobProfileResolver,
+): Promise<Record<string, string>> {
+  const credential = token || tokenFromHeaders(incoming)
+  const discovered = credential ? await profiles?.resolve(credential, authSchemeFor(credential)) : undefined
+  const headers: Record<string, string | null | undefined> = {}
+  // Explicit request headers win over the generated routing pair, compared
+  // case-insensitively so a `X-Team-Id` from config is not sent twice.
+  // The User-Agent is the exception: it is the plugin's (`IBM_BOB_USER_AGENT`),
+  // never the one OpenCode or the AI SDK put on the request.
+  const present = new Set(Object.keys(incoming).map((name) => name.toLowerCase()))
+  const routing = routingHeaders(undefined, discovered)
+  for (const [name, value] of Object.entries(routing)) {
+    if (!present.has(name.toLowerCase())) headers[name] = value
+  }
+  for (const [name, value] of Object.entries(incoming)) {
+    if (name.toLowerCase() !== "user-agent") headers[name] = value
+  }
+  headers["User-Agent"] = routing["User-Agent"]
+  applyBobAuthHeaders(headers, credential)
+  if (!Object.keys(headers).some((name) => name.toLowerCase() === "x-instance-id")) {
+    const instance = readInstanceFromJwt(credential)
+    if (instance) headers["x-instance-id"] = instance
+  }
+
+  const final: Record<string, string> = {}
+  for (const [name, value] of Object.entries(headers)) {
+    if (typeof value === "string") final[name] = value
+  }
+  return final
 }
 
 /**
@@ -162,24 +207,8 @@ export function createBobFetch(
 ): BobFetch {
   return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const token = await resolver.resolve()
-    // Bob rejects inference with `402 team user not found` when an SSO token
-    // carries no team, and the team is only discoverable from `/admin/v1/profile`.
-    const discovered = token ? await profiles?.resolve(token, authSchemeFor(token)) : undefined
-    const headers: Record<string, string | null | undefined> = {
-      ...routingHeaders(undefined, discovered),
-      ...headersToRecord(init?.headers),
-    }
-    applyBobAuthHeaders(headers, token)
-    if (!headers["x-instance-id"]) {
-      const instance = readInstanceFromJwt(token)
-      if (instance) headers["x-instance-id"] = instance
-    }
-
-    const final: Record<string, string> = {}
-    for (const [name, value] of Object.entries(headers)) {
-      if (typeof value === "string") final[name] = value
-    }
-    const response = await fetch(input, { ...init, headers: final })
+    const headers = await bobRequestHeaders(headersToRecord(init?.headers), token, profiles)
+    const response = await fetch(input, { ...init, headers })
     // Bob bills in Bobcoins and reports the amount on the response itself.
     spend?.observe(response)
     return response
