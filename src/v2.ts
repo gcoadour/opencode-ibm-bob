@@ -45,15 +45,26 @@ export const SSO_METHOD_ID = "sso"
 export const API_KEY_ENV = ["IBM_BOB_API_KEY", "IBM_BOB_KEY"] as const
 
 /**
- * V2 drives requests through its own `@opencode/ai` provider packages, which
- * honour the session HTTP hooks used below. `IBM_BOB_NPM` still selects an AI
- * SDK package instead (`aisdk:` prefix), or another native package.
+ * V2's own `@opencode/ai` provider packages, bundled with OpenCode (no npm
+ * download). `IBM_BOB_NPM` still selects an AI SDK package instead (sent with
+ * the `aisdk:` prefix V2 requires; a bare `@ai-sdk/...` name is read as a
+ * native package and fails with "does not export model"), or another native
+ * package.
  */
 const NATIVE_PACKAGE_BY_API: Record<BobApi, string> = {
   "openai-completions": "@opencode/ai/providers/openai-compatible",
   "openai-responses": "@opencode/ai/providers/openai",
   "anthropic-messages": "@opencode/ai/providers/anthropic",
 }
+
+/**
+ * Makes the native OpenAI-compatible route send the body the AI SDK adapter
+ * sends under V1, which is what live Bob was validated against: `max_tokens`
+ * rather than `max_completion_tokens`, and no `stream_options`. Without it
+ * Bob answers `validation failed`. Inherited by every model of the provider;
+ * a `compatibility` set in `opencode.json` still wins.
+ */
+export const BOB_COMPATIBILITY = { maxTokensField: "max_tokens", streamUsage: false } as const
 
 export function v2Package(api: BobApi): string {
   const explicit = env("IBM_BOB_NPM")
@@ -253,6 +264,7 @@ export async function setup(ctx: Plugin.Context): Promise<void> {
           name: PROVIDER_NAME,
           activation: "auto",
           package: defaults.package,
+          compatibility: { ...BOB_COMPATIBILITY },
           settings: { baseURL: defaults.baseURL },
           headers: defaults.headers,
         },
@@ -268,6 +280,7 @@ export async function setup(ctx: Plugin.Context): Promise<void> {
       provider.integrationID ??= PROVIDER_ID as NonNullable<Provider.Info["integrationID"]>
       if (!provider.name || provider.name === PROVIDER_ID) provider.name = PROVIDER_NAME
       if (!provider.package) provider.package = defaults.package
+      provider.compatibility = { ...BOB_COMPATIBILITY, ...provider.compatibility }
       provider.settings = { baseURL: defaults.baseURL, ...provider.settings }
       provider.headers = { ...defaults.headers, ...provider.headers }
     })

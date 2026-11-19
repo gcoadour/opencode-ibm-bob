@@ -137,6 +137,7 @@ describe("V2 provider", () => {
       activation: "auto",
       package: "@opencode/ai/providers/openai-compatible",
       settings: { baseURL: "https://api.us-east.bob.ibm.com/inference/v1" },
+      compatibility: { maxTokensField: "max_tokens", streamUsage: false },
     })
     expect(record.provider.headers["User-Agent"]).toStartWith("opencode-ibm-bob/")
     expect([...record.models.keys()]).toEqual(["premium"])
@@ -161,6 +162,7 @@ describe("V2 provider", () => {
         package: "",
         settings: { baseURL: "https://gateway.example/v1" },
         headers: { "x-team-id": "pinned" },
+        compatibility: { streamUsage: true },
       },
       models: [{ id: "premium", name: "Pinned premium" }],
     })
@@ -172,6 +174,7 @@ describe("V2 provider", () => {
     expect(record.provider.name).toBe("IBM Bob")
     expect(record.provider.package).toBe("@opencode/ai/providers/openai-compatible")
     expect(record.models.get("premium")!.name).toBe("Pinned premium")
+    expect(record.provider.compatibility).toEqual({ maxTokensField: "max_tokens", streamUsage: true })
   })
 
   test("maps IBM_BOB_API and IBM_BOB_NPM to a V2 package", () => {
