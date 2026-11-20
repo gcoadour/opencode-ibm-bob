@@ -2,6 +2,7 @@
 // type-only: OpenCode V1 loads this same module, and has no `@opencode/plugin`
 // package to resolve at runtime.
 import type { Credential, Model, Plugin, Provider } from "@opencode/plugin"
+import type { Types } from "effect"
 import {
   BobTokenResolver,
   authSchemeFor,
@@ -24,11 +25,11 @@ import {
   PROVIDER_ID,
   PROVIDER_NAME,
   configuredApiKey,
-  env,
   envBool,
   envInt,
   errorMessage,
   log,
+  npmPackage,
   parseApi,
   readBobShellSettings,
   requestBaseUrl,
@@ -45,32 +46,53 @@ export const SSO_METHOD_ID = "sso"
 export const API_KEY_ENV = ["IBM_BOB_API_KEY", "IBM_BOB_KEY"] as const
 
 /**
- * V2's own `@opencode/ai` provider packages, bundled with OpenCode (no npm
- * download). `IBM_BOB_NPM` still selects an AI SDK package instead (sent with
- * the `aisdk:` prefix V2 requires; a bare `@ai-sdk/...` name is read as a
- * native package and fails with "does not export model"), or another native
- * package.
- */
-const NATIVE_PACKAGE_BY_API: Record<BobApi, string> = {
-  "openai-completions": "@opencode/ai/providers/openai-compatible",
-  "openai-responses": "@opencode/ai/providers/openai",
-  "anthropic-messages": "@opencode/ai/providers/anthropic",
-}
-
-/**
- * Makes the native OpenAI-compatible route send the body the AI SDK adapter
- * sends under V1, which is what live Bob was validated against: `max_tokens`
- * rather than `max_completion_tokens`, and no `stream_options`. Without it
- * Bob answers `validation failed`. Inherited by every model of the provider;
- * a `compatibility` set in `opencode.json` still wins.
+ * Only read by V2's native `@opencode/ai` routes (opt-in, see `v2Package`):
+ * makes the OpenAI-compatible one send `max_tokens` and no `stream_options`,
+ * like the AI SDK adapter. Inherited by every model of the provider; a
+ * `compatibility` set in `opencode.json` still wins.
  */
 export const BOB_COMPATIBILITY = { maxTokensField: "max_tokens", streamUsage: false } as const
 
+/**
+ * The provider package V2 loads. By default the same AI SDK adapter as V1
+ * (`@ai-sdk/openai-compatible`, `@ai-sdk/openai` or `@ai-sdk/anthropic` per
+ * `IBM_BOB_API`): live Bob answers `validation failed` through V2's native
+ * `@opencode/ai/providers/openai-compatible` route. V2 only treats a package
+ * as AI SDK with the `aisdk:` prefix (a bare `@ai-sdk/...` name is read as a
+ * native package and fails with "does not export model"), so it is added
+ * here. `IBM_BOB_NPM=@opencode/ai/providers/...` still opts into a native route.
+ */
 export function v2Package(api: BobApi): string {
-  const explicit = env("IBM_BOB_NPM")
-  if (!explicit) return NATIVE_PACKAGE_BY_API[api]
-  if (explicit.startsWith("@opencode/ai/") || explicit.startsWith("aisdk:")) return explicit
-  return `aisdk:${explicit}`
+  const pkg = npmPackage(api)
+  if (pkg.startsWith("@opencode/ai/") || pkg.startsWith("aisdk:")) return pkg
+  return `aisdk:${pkg}`
+}
+
+/**
+ * V2's native OpenAI-compatible route marks every tool `function.strict:
+ * false`, a field the AI SDK adapter (validated against live Bob) never sends;
+ * live Bob answers `validation failed` on that route. Returns the body
+ * without it, or `undefined` when there was nothing to remove.
+ */
+export function withoutStrictTools(body: string): string | undefined {
+  if (!body.includes('"strict"')) return undefined
+  let payload: unknown
+  try {
+    payload = JSON.parse(body)
+  } catch {
+    return undefined
+  }
+  const tools = (payload as { tools?: unknown } | null)?.tools
+  if (!Array.isArray(tools)) return undefined
+  let changed = false
+  for (const tool of tools) {
+    const fn = (tool as { function?: Record<string, unknown> } | null)?.function
+    if (fn && typeof fn === "object" && "strict" in fn) {
+      delete fn.strict
+      changed = true
+    }
+  }
+  return changed ? JSON.stringify(payload) : undefined
 }
 
 /** Converts the V1-shaped model entry `buildModels` produces into a V2 `Model.Info`. */
@@ -275,21 +297,24 @@ export async function setup(ctx: Plugin.Context): Promise<void> {
 
     // `opencode.json` declared `providers.ibm-bob` (or `provider.ibm-bob`)
     // before this ran: fill in only what it left unset, so a corporate
-    // endpoint or a pinned model stays in place.
-    editor.update(PROVIDER_ID, (provider) => {
-      provider.integrationID ??= PROVIDER_ID as NonNullable<Provider.Info["integrationID"]>
-      if (!provider.name || provider.name === PROVIDER_ID) provider.name = PROVIDER_NAME
-      if (!provider.package) provider.package = defaults.package
-      provider.compatibility = { ...BOB_COMPATIBILITY, ...provider.compatibility }
-      provider.settings = { baseURL: defaults.baseURL, ...provider.settings }
-      provider.headers = { ...defaults.headers, ...provider.headers }
+    // endpoint or a pinned model stays in place. The record is rebuilt with
+    // `add` rather than edited with `update`: `update` rewrites an `aisdk:`
+    // package to the matching native route, which live Bob rejects.
+    const provider = structuredClone(current.provider) as Types.DeepMutable<Provider.Info>
+    provider.integrationID ??= PROVIDER_ID as NonNullable<Provider.Info["integrationID"]>
+    if (!provider.name || provider.name === PROVIDER_ID) provider.name = PROVIDER_NAME
+    if (!provider.package) provider.package = defaults.package
+    provider.compatibility = { ...BOB_COMPATIBILITY, ...provider.compatibility }
+    provider.settings = { baseURL: defaults.baseURL, ...provider.settings }
+    provider.headers = { ...defaults.headers, ...provider.headers }
+    const merged = new Map<string, Model.Info>()
+    for (const model of models) merged.set(model.id, model)
+    for (const [id, model] of current.models) merged.set(id, structuredClone(model))
+    editor.add({
+      info: provider as Provider.Info,
+      models: [...merged.values()],
+      ...(current.sourceConnection ? { sourceConnection: current.sourceConnection } : {}),
     })
-    for (const model of models) {
-      if (current.models.has(model.id)) continue
-      editor.models.update(PROVIDER_ID, model.id, (target) => {
-        Object.assign(target, structuredClone(model))
-      })
-    }
   })
 
   // Bob wants `Apikey <key>` (not `Bearer`) for API keys, plus the
@@ -299,9 +324,15 @@ export async function setup(ctx: Plugin.Context): Promise<void> {
     async (event) => {
       const current = event.request.headers
       const headers = await bobRequestHeaders(headersRecord(current), undefined, profiles)
-      // Edited in place: replacing the Request would make OpenCode copy the body.
-      for (const name of Object.keys(headersRecord(current))) current.delete(name)
-      for (const [name, value] of Object.entries(headers)) current.set(name, value)
+      const body = event.request.body ? withoutStrictTools(await event.request.clone().text()) : undefined
+      if (body !== undefined) {
+        // Only rebuilt when the body changes: OpenCode then has to copy it.
+        for (const name of Object.keys(headers)) if (name.toLowerCase() === "content-length") delete headers[name]
+        event.request = new Request(event.request, { headers, body })
+      } else {
+        for (const name of Object.keys(headersRecord(current))) current.delete(name)
+        for (const [name, value] of Object.entries(headers)) current.set(name, value)
+      }
       const token = headers.Authorization?.replace(/^\S+\s+/u, "")
       if (token) {
         void refreshBudget(token).catch((error) =>

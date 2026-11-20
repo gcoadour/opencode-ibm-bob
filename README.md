@@ -47,17 +47,24 @@ same with `tui` and `setup`. The V2 side imports nothing from
 What changed under V2, since its plugin API is a rewrite:
 
 - **Provider and models** go through `ctx.provider.transform` instead of the
-  `config` hook, as `Model.Info` records, with OpenCode's native
-  `@opencode/ai/providers/openai-compatible` package (or `…/openai`,
-  `…/anthropic` per `IBM_BOB_API`). The transform fills in only what an
+  `config` hook, as `Model.Info` records. The transform fills in only what an
   `opencode.json` entry for `ibm-bob` left unset.
-  The provider also sets `compatibility: { maxTokensField: "max_tokens",
-  streamUsage: false }`, so the native route sends the same body as the V1
-  AI SDK adapter (`max_tokens`, no `stream_options`); without it Bob answers
-  `validation failed`. To use the AI SDK adapter instead, set
-  `IBM_BOB_NPM=@ai-sdk/openai-compatible` — the plugin adds the `aisdk:`
-  prefix V2 requires (a bare `@ai-sdk/...` package name fails with
-  "does not export model").
+- **The adapter is the same AI SDK package as on V1** by default
+  (`aisdk:@ai-sdk/openai-compatible`, or `…/openai`, `…/anthropic` per
+  `IBM_BOB_API`). V2 only treats a package as AI SDK with the `aisdk:` prefix,
+  which the plugin adds — a bare `@ai-sdk/...` name is read as a native package
+  and fails with "does not export model". Live Bob answers `validation failed`
+  through V2's native `@opencode/ai/providers/openai-compatible` route.
+- **When `opencode.json` declares models for `ibm-bob`**, OpenCode itself
+  switches those models to the native route, and a plugin cannot prevent it.
+  So the plugin also makes the native route send what the AI SDK sends: no
+  `tools[].function.strict` (removed in the `http.request` hook), `max_tokens`
+  rather than `max_completion_tokens`, and no `stream_options` (provider
+  `compatibility`). It still adds `b3`/`traceparent` tracing headers, which
+  the plugin cannot remove. If `validation failed` comes back in that setup,
+  remove the `models` block for `ibm-bob` from `opencode.json`. You can also
+  opt into the native route with
+  `IBM_BOB_NPM=@opencode/ai/providers/openai-compatible`.
 - **Login** goes through `ctx.integration.transform`: the SSO method, a
   stored-key method and the `IBM_BOB_API_KEY` / `IBM_BOB_KEY` env method.
   OpenCode itself now stores the credential and calls the plugin's `refresh`

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import plugin from "../src/index.ts"
 import tuiModule from "../src/tui.tsx"
-import { API_KEY_ENV, SSO_METHOD_ID, setup, toModelInfo, v2Package } from "../src/v2.ts"
+import { API_KEY_ENV, SSO_METHOD_ID, setup, toModelInfo, v2Package, withoutStrictTools } from "../src/v2.ts"
 import { buildModels } from "../src/models.ts"
 import { jwt, modelInfoEntry, resetEnv } from "./helpers.ts"
 
@@ -135,7 +135,7 @@ describe("V2 provider", () => {
       integrationID: "ibm-bob",
       name: "IBM Bob",
       activation: "auto",
-      package: "@opencode/ai/providers/openai-compatible",
+      package: "aisdk:@ai-sdk/openai-compatible",
       settings: { baseURL: "https://api.us-east.bob.ibm.com/inference/v1" },
       compatibility: { maxTokensField: "max_tokens", streamUsage: false },
     })
@@ -172,14 +172,17 @@ describe("V2 provider", () => {
     expect(record.provider.settings.baseURL).toBe("https://gateway.example/v1")
     expect(record.provider.headers["x-team-id"]).toBe("pinned")
     expect(record.provider.name).toBe("IBM Bob")
-    expect(record.provider.package).toBe("@opencode/ai/providers/openai-compatible")
+    expect(record.provider.package).toBe("aisdk:@ai-sdk/openai-compatible")
     expect(record.models.get("premium")!.name).toBe("Pinned premium")
     expect(record.provider.compatibility).toEqual({ maxTokensField: "max_tokens", streamUsage: true })
   })
 
-  test("maps IBM_BOB_API and IBM_BOB_NPM to a V2 package", () => {
-    expect(v2Package("anthropic-messages")).toBe("@opencode/ai/providers/anthropic")
-    expect(v2Package("openai-responses")).toBe("@opencode/ai/providers/openai")
+  test("maps IBM_BOB_API and IBM_BOB_NPM to a V2 package, the AI SDK by default", () => {
+    expect(v2Package("openai-completions")).toBe("aisdk:@ai-sdk/openai-compatible")
+    expect(v2Package("anthropic-messages")).toBe("aisdk:@ai-sdk/anthropic")
+    expect(v2Package("openai-responses")).toBe("aisdk:@ai-sdk/openai")
+    process.env.IBM_BOB_NPM = "aisdk:@ai-sdk/openai"
+    expect(v2Package("openai-completions")).toBe("aisdk:@ai-sdk/openai")
     process.env.IBM_BOB_NPM = "@ai-sdk/openai-compatible"
     expect(v2Package("openai-completions")).toBe("aisdk:@ai-sdk/openai-compatible")
     process.env.IBM_BOB_NPM = "@opencode/ai/providers/openai-compatible"
@@ -309,5 +312,36 @@ describe("V2 request hooks", () => {
 
     const result = await tools[0].execute({}, {})
     expect(result.content).toContain("This session so far: 0.500 Bobcoins ($0.25) over 1 billed response(s).")
+  })
+})
+
+describe("V2 native route parity", () => {
+  test("drops tools[].function.strict, keeping the rest of the body", async () => {
+    const fake = fakeContext()
+    await setup(fake.ctx)
+    const body = {
+      model: "premium",
+      stream: true,
+      max_tokens: 8192,
+      tools: [{ type: "function", function: { name: "read", parameters: { type: "object" }, strict: false } }],
+    }
+    const event = {
+      request: new Request("https://example.test/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer bob-key", "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    }
+    await fake.hooks["http.request"]!(event)
+
+    const sent = JSON.parse(await event.request.text())
+    expect(sent.tools[0].function).toEqual({ name: "read", parameters: { type: "object" } })
+    expect(sent.max_tokens).toBe(8192)
+    expect(event.request.headers.get("authorization")).toBe("Apikey bob-key")
+  })
+
+  test("leaves a body without strict tools untouched", () => {
+    expect(withoutStrictTools(JSON.stringify({ tools: [{ function: { name: "a" } }] }))).toBeUndefined()
+    expect(withoutStrictTools("not json")).toBeUndefined()
   })
 })
